@@ -489,6 +489,41 @@ Three things this buys us that PLAN did not assume:
    silently violate "same model versions across configs". If drift shows up, pin with
    `"provider": {"order": [...], "allow_fallbacks": false}`.
 
+### Provider routing (measured 2026-09-01)
+
+OpenRouter serves `z-ai/glm-5.1` from 14 upstreams that differ in **price** and in
+**quantization**:
+
+| upstream | in $/Mtok | out $/Mtok | **cache read $/Mtok** | quant |
+|---|---|---|---|---|
+| gmicloud | 0.910 | 2.860 | 0.169 | fp8 |
+| streamlake | 0.966 | 3.036 | 0.179 | fp8 |
+| chutes | 0.980 | 3.080 | **0.098** | fp8 |
+| deepinfra | 1.050 | 3.500 | 0.205 | **fp4** |
+| siliconflow | 1.190 | 3.740 | **0.600** | fp8 |
+| nebius | 1.400 | 4.400 | 0.000 (no discount) | fp8 |
+
+Cache reads are ~80% of our input tokens, so the 6x spread on that column ($0.098-$0.600)
+dominates cost — a trial costs ~$0.49 on chutes and ~$1.79 on a provider without cache
+discounting. And uncontrolled routing is a **validity** problem, not only a cost one:
+fp4 and fp8 are different weights, so different configs could be measured against
+different models, breaking PLAN.md hard rule 9.
+
+**Restricted account-wide to gmicloud + chutes (both fp8).** Verified by probe: 8
+consecutive calls served 7x GMICloud, 1x Chutes, no other upstream. This is set in the
+OpenRouter dashboard rather than per request because **pi offers no routing hook**, and
+config A has to be covered too. `configs/models.yaml` additionally carries
+`provider_routing` for our own loop to send as the `provider` field.
+
+Provider slugs come from `GET /api/v1/models/{id}/endpoints` (`tag` field, e.g.
+`gmicloud/fp8`).
+
+**Caching is explicit, not implicit.** Every endpoint reports
+`supports_implicit_caching: false`, yet a live pi run showed 80% of input tokens billed as
+cache reads — so the caching comes from explicit cache breakpoints in the request, not from
+the provider caching on its own. `harness/llm.py` must therefore set cache breakpoints
+itself; a static system prefix alone will not be cached.
+
 **Prompt caching: unverified.** `cached_tokens` was 0 on both models, but the probe prompt was only
 ~200 tokens and providers typically require ≥1k tokens before caching engages. Re-measure with the
 real config-C system prompt in P2.9 before claiming any cached-token savings; the
@@ -575,6 +610,38 @@ Sampling noise alone puts a 1-trial, 100-task estimate of a ~36% rate at about *
 so PLAN's ±8-point band is roughly ±1.7 SE — a real check, but it cannot resolve small harness
 differences. Two of the differences above (4 tools vs 7, no turn cap) are worth re-checking if the
 observed number lands outside the band before blaming the environment.
+
+### Cost and time structure of config A (49 eval100 trials)
+
+| | per trial |
+|---|---|
+| input tokens | **1,247,763** (median 1.19M, p90 2.37M, max 5.12M) |
+| of which cache reads | 1,000,394 — **80%** |
+| output tokens | 46,618 |
+| cost | **$0.730** (uncached input $0.24, cache reads ~$0.35, output $0.14) |
+| steps | median 27, p90 45, max 70 |
+| agent wall-clock | median 12 min, p90 32 min, max 48 min |
+
+| | passed (22) | failed (27) |
+|---|---|---|
+| mean cost | $0.46 | **$0.95** |
+| mean steps | 22 | 34 |
+| mean wall-clock | 10 min | 20 min |
+
+**72% of the spend went to trials that failed.** The cost driver is context volume, not
+answer length: pi re-sends a conversation that grows with every unpaged tool dump (its bash
+tool alone permits 50 KB per call) across a median of 27 steps. This is the quantitative
+case for the paging layer (P2.2), the typed client (P2.3) and the finish gate (P2.4) —
+they attack exactly the two things the data blames.
+
+Decisions taken from this (2026-09-01):
+- **Iteration runs default to the small model** (`Makefile MODEL ?= small`; `run.py` warns
+  when `big` is asked for on dev5/dev10). A dev trial is ~$0.10 there against ~$0.73.
+  Only dev40 curve points, which go into the write-up, use big.
+- **`token_cap` lowered 2.5M -> 1.5M** for our configs: above the median, below p90, so it
+  bounds the tail without touching a typical trajectory. Config A stays uncapped, since pi
+  has no such cap and adding one would break comparability.
+- **N raised to 12** after the Docker VM went from 7.75 GiB to 31.3 GiB.
 
 ### Attempt 1 (2026-09-01) — invalid, out of credit
 

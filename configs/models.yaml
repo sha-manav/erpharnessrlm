@@ -8,6 +8,20 @@
 # temperature: null means "do not send the field" — pi never sets temperature, so our
 # harness must not either, or the configs would differ on more than the harness.
 # Pricing is USD per million tokens, used only for the cost-per-task metric.
+#
+# provider_routing is sent by our own loop (harness/llm.py) as the OpenRouter `provider`
+# field. Two reasons, both measured (NOTES.md ## Models / Provider routing):
+#   cost     GLM-5.1 has 14 upstreams whose cache-read price spans 6x ($0.098-$0.600 per
+#            Mtok), and cache reads are ~80% of our input tokens.
+#   validity upstreams differ in quantization (fp8 vs fp4). Letting requests roam means
+#            different configs can run against different weights, which breaks PLAN.md
+#            hard rule 9. Pinning to fp8 removes the confound.
+# pi (config A) offers no such hook, so the same restriction is set account-wide in the
+# OpenRouter dashboard; that is what covers config A.
+#
+# role: which model a run should use by default. Iteration is done on `small` because a
+# dev trial costs ~$0.10 there versus ~$0.73 on `big`; only dev-curve points that go into
+# the write-up need `big`.
 
 big:
   base_url: https://openrouter.ai/api/v1
@@ -19,6 +33,7 @@ big:
   supports_prompt_cache: null      # measured in P0.4
   pricing_per_mtok: {input: 0.966, cached_input: null, output: 3.036}
   leaderboard_pass_at_1: 35.8      # published coding-mode number for GLM-5.1
+  provider_routing: {only: [gmicloud, chutes], allow_fallbacks: false, quantizations: [fp8]}
   est_cost_per_trial_usd: 0.73     # measured over 49 eval100 trials of config A (dev5's $0.23 was
                                    # unrepresentative: dev5 is the five easiest patterns)
 
@@ -32,4 +47,5 @@ small:
   supports_prompt_cache: null
   pricing_per_mtok: {input: 0.08, cached_input: null, output: 0.28}
   leaderboard_pass_at_1: null
+  provider_routing: {allow_fallbacks: true, quantizations: [fp8]}
   est_cost_per_trial_usd: 0.05     # ~7x cheaper per token than GLM-5.1; re-measure after the first run

@@ -6,9 +6,13 @@ TASKS_DIR ?= vendor/erp-bench/tasks
 JOBS_DIR  ?= runs/jobs
 VERIFIER  ?= harness.verifier:FlatVerifier
 CONFIG    ?= C_full
-MODEL     ?= big
+# Iteration default: a dev trial costs ~$0.10 on small vs ~$0.73 on big.
+# Dev-curve and eval runs pass MODEL=big explicitly.
+MODEL     ?= small
 SET       ?= dev5
-N         ?= 1
+# Docker VM is 31 GiB and a trial uses ~0.5 GiB at almost no CPU, so this is
+# latency-bound rather than resource-bound.
+N         ?= 12
 
 PY ?= python3
 

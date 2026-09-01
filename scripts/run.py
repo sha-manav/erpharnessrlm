@@ -32,6 +32,12 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_SETS = {"eval100"}
 
+# Sets used purely for iteration while building the harness. A trial costs ~$0.73 on the
+# big model and ~$0.10 on the small one, and nothing from these sets goes into the
+# write-up, so they default to the small model (PLAN.md P2.9: only dev40 feeds the dev
+# curve). Using the big model here is allowed but has to be deliberate.
+ITERATION_SETS = {"dev5", "dev10"}
+
 
 def git(*args: str) -> str:
     proc = subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True)
@@ -203,6 +209,13 @@ def main() -> int:
     api_key = env_file.get(model["api_key_env"]) or os.environ.get(model["api_key_env"], "")
     if not api_key:
         raise SystemExit(f"{model['api_key_env']} is not set (looked in .env and the environment)")
+    if args.set in ITERATION_SETS and args.model == "big":
+        print(
+            f"note: '{args.set}' is an iteration set and you asked for the big model "
+            f"(~${model.get('est_cost_per_trial_usd', 0):.2f}/trial vs "
+            f"~${models['small'].get('est_cost_per_trial_usd', 0):.2f} on small). "
+            "Only dev40 needs the big model."
+        )
     credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

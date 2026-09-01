@@ -17,8 +17,14 @@
 # about how long each one is allowed to run.
 
 defaults:
-  step_cap: 150            # pi has no turn cap; 150 is well above its observed 20 turns
-  token_cap: 2500000       # total input tokens (cached + uncached) per trajectory
+  step_cap: 150            # pi has no turn cap at all; 150 is well above its measured
+                           # eval100 distribution (median 27, p90 45, max 70 steps)
+  # Total input tokens (cached + uncached) per trajectory. Set from config A's measured
+  # distribution over eval100: median 1.19M, p90 2.37M, max 5.12M. 1.5M sits above the
+  # median and below p90, so it bounds the flailing tail — which is where 72% of the
+  # spend went — without touching a typical trajectory. Config A is exempt: pi has no
+  # such cap, and adding one would break comparability with the published numbers.
+  token_cap: 1500000
   bash_timeout_s: 120
   kernel_timeout_s: 120
   finish_gate: false
