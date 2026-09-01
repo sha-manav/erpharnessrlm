@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EVAL_SETS = {"eval100", "eval100_remaining"}
+EVAL_SETS = {"eval100", "eval100_remaining", "eval100_remaining_big", "eval100_remaining_small"}
 
 # Sets used purely for iteration while building the harness. A trial costs ~$0.73 on the
 # big model and ~$0.10 on the small one, and nothing from these sets goes into the
