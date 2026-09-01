@@ -6,7 +6,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P0.1 Harbor                 | done   | 2026-08-31 | harbor 0.22.0; CLI flags, custom-agent interface, result schema in NOTES; nop run on dev task parses
 - P0.2 ERP-Bench dataset      | done   | 2026-08-31 | 300 tasks/29 patterns; dev task 2000_easy_01_buy_only_baseline; nop=0 oracle=100; Odoo XML-RPC+JSON2 and PG SELECT verified; minting verified
 - P0.3 pi harness             | doing  | 2026-08-31 | pi-mono 0.84.1 read: 4 tools, system prompt, no turn cap, temp unset. Run on dev task pending API key
-- P0.4 Model endpoints        | blocked| 2026-08-31 | needs MODEL_BIG_API_KEY / MODEL_SMALL_API_KEY from user
+- P0.4 Model endpoints        | done   | 2026-08-31 | OpenRouter GLM-5.1 (big) + Qwen3-32B (small); 2-turn tool round trip OK; usage/cost/provider fields recorded
 - P0.5 Container abstraction  | done   | 2026-08-31 | host-side driver; DockerContainer round-trip verified on erpdev; HarborContainer bridges in P2.8
 
 ## Phase 1 — Reproduction and failure analysis

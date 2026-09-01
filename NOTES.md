@@ -375,7 +375,62 @@ inside the container in `meta.json`, and run every config-A trial from one pinne
 
 ## Models
 
-*(P0.4 — blocked on `MODEL_BIG_API_KEY` / `MODEL_SMALL_API_KEY` and base URLs)*
+Both models are served through **OpenRouter** (`https://openrouter.ai/api/v1`), so config A
+(pi, which has a native `openrouter` provider) and configs B/C (our OpenAI-compatible loop) hit the
+same endpoint and the same weights — the only difference between them is the harness.
+
+| | big | small |
+|---|---|---|
+| model | `z-ai/glm-5.1` | `qwen/qwen3-32b` |
+| pi `-m` | `openrouter/z-ai/glm-5.1` | `openrouter/qwen/qwen3-32b` |
+| price in / out (USD per Mtok) | 0.966 / 3.036 | 0.08 / 0.28 |
+| context | 204,800 | 131,072 |
+| published ERP-Bench pass@1 | **35.8** (coding mode) | — |
+| observed serving provider | StreamLake | DeepInfra |
+| 2-turn tool round trip | **works** | **works** |
+| turn latency (trivial prompt) | 4–5 s | 8–11 s |
+
+Key lives in `.env` (mode 600, gitignored) as `OPENROUTER_API_KEY`, mirrored to
+`MODEL_BIG_API_KEY` / `MODEL_SMALL_API_KEY`. Never logged: strip `Authorization` before writing
+any request to a trajectory.
+
+### `usage` object (measured, identical shape for both models)
+
+```json
+{"prompt_tokens": 201, "completion_tokens": 39, "total_tokens": 240,
+ "cost": 0.00031257, "is_byok": false,
+ "prompt_tokens_details":     {"cached_tokens": 0, "cache_write_tokens": 0, "audio_tokens": 0, "video_tokens": 0},
+ "completion_tokens_details": {"reasoning_tokens": 22, "image_tokens": 0, "audio_tokens": 0},
+ "cost_details": {"upstream_inference_cost": ..., "upstream_inference_prompt_cost": ...,
+                  "upstream_inference_completions_cost": ...}}
+```
+
+Mapping to our common schema: `usage.input = prompt_tokens` (this **includes** cached tokens),
+`usage.cached = prompt_tokens_details.cached_tokens`, `usage.output = completion_tokens`.
+
+Three things this buys us that PLAN did not assume:
+
+1. **`cost` is returned per call in USD.** Cost per task is therefore measured, not derived from a
+   price table — `pricing_per_mtok` in `configs/models.yaml` is kept only as a cross-check.
+2. **`completion_tokens_details.reasoning_tokens`** is reported separately (GLM-5.1 spent 22 of 39
+   output tokens reasoning; Qwen3-32B spent 195 of 218). Log it: an ablation that changes output
+   token count may be changing reasoning length, not answer length.
+3. **`provider` is reported per response** (which upstream actually served the request). Log it per
+   call — OpenRouter routes across providers, and a quantisation difference between providers would
+   silently violate "same model versions across configs". If drift shows up, pin with
+   `"provider": {"order": [...], "allow_fallbacks": false}`.
+
+**Prompt caching: unverified.** `cached_tokens` was 0 on both models, but the probe prompt was only
+~200 tokens and providers typically require ≥1k tokens before caching engages. Re-measure with the
+real config-C system prompt in P2.9 before claiming any cached-token savings; the
+`supports_prompt_cache` field in `configs/models.yaml` stays `null` until then.
+
+Tool-call format: standard OpenAI `tool_calls` with `function.name` / `function.arguments`
+(a JSON string). Call ids differ in shape by provider (`call_eb3c8c36…` vs `call_oNXesMEH…`) —
+echo them back verbatim, never construct them.
+
+Rate limits: OpenRouter returned **no** `x-ratelimit-*` headers on these calls. Treat 429s as the
+only signal and rely on the loop's exponential backoff (max 5 retries → `api_error`).
 
 ## Minting
 

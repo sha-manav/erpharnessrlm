@@ -1,0 +1,32 @@
+# Model endpoints. Secrets live in .env / the environment, never here.
+#
+# Both models are served by OpenRouter so that config A (pi, which speaks the
+# `openrouter` provider natively) and configs B/C (our OpenAI-compatible loop) hit the
+# same endpoint and the same weights. `pi_model` is the string Harbor passes to pi as
+# `-m provider/model`.
+#
+# temperature: null means "do not send the field" — pi never sets temperature, so our
+# harness must not either, or the configs would differ on more than the harness.
+# Pricing is USD per million tokens, used only for the cost-per-task metric.
+
+big:
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: MODEL_BIG_API_KEY
+  model: z-ai/glm-5.1
+  pi_model: openrouter/z-ai/glm-5.1
+  temperature: null
+  max_tokens: 4096
+  supports_prompt_cache: null      # measured in P0.4
+  pricing_per_mtok: {input: 0.966, cached_input: null, output: 3.036}
+  leaderboard_pass_at_1: 35.8      # published coding-mode number for GLM-5.1
+
+small:
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: MODEL_SMALL_API_KEY
+  model: qwen/qwen3-32b
+  pi_model: openrouter/qwen/qwen3-32b
+  temperature: null
+  max_tokens: 4096
+  supports_prompt_cache: null
+  pricing_per_mtok: {input: 0.08, cached_input: null, output: 0.28}
+  leaderboard_pass_at_1: null
