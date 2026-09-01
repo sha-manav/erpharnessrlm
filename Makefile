@@ -57,6 +57,10 @@ ingest: ## Convert Harbor job output into the common schema
 aggregate: ## Build analysis/results.csv
 	$(PY) scripts/aggregate.py
 
+.PHONY: publish
+publish: ## Package results for the repo (results.csv, reproduction.md, trajectories)
+	$(PY) scripts/publish_results.py
+
 .PHONY: stats
 stats: ## McNemar + paired bootstrap -> analysis/stats.md
 	$(PY) scripts/stats.py

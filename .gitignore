@@ -1,4 +1,5 @@
 runs/
+!analysis/trajectories/
 jobs/
 data/minted/
 vendor/
