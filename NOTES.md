@@ -667,9 +667,66 @@ from these.
 
 *(P1.3 result to be filled after the config-A eval100 runs.)*
 
-## Odoo wizards
+## Odoo wizards and other Odoo-19 traps
 
-*(P2.3)*
+Everything here was hit while making `tests/test_erp.py` pass against the live image, and
+every one of them is a way to get a **silently wrong end state** rather than an error.
+
+### 1. Marking an MO done consumes nothing unless you write the raw moves
+
+`action_assign` + `qty_producing` + `button_mark_done` leaves the order at `state = done`
+while its `move_raw_ids` end at `state = cancel, quantity = 0.0, picked = False`. The
+finished product is created; the components are never consumed. Odoo fills a raw move's
+`quantity` from an onchange that does not fire over RPC.
+
+Fix (in `erp.produce`): after setting `qty_producing`, write
+`{"quantity": product_uom_qty * share, "picked": True}` on every raw move that is not
+already done or cancelled, then `button_mark_done`. Reading `mrp.production` afterwards
+never reveals the problem — only `stock.move` does.
+
+### 2. Pickings need `quantity` + `picked`, and there is no `quantity_done`
+
+Odoo 19 renamed the done quantity to `stock.move.quantity` with a companion `picked`
+boolean; `quantity_done` does not exist (`fields_get` confirms). `stock.picking` exposes
+`move_ids`, not `move_ids_without_package`. A picking validated without writing those is a
+zero-quantity transfer that still reports `state = done`.
+
+### 3. `create_invoices` commits, then fails to serialise its reply
+
+`sale.advance.payment.inv.create_invoices` returns a UI action containing nulls, and
+Odoo's XML-RPC layer raises `TypeError: cannot marshal None unless allow_none is enabled`
+while writing the response — **after** the transaction has committed. Verified: the
+invoice exists afterwards (draft, `invoice_origin = S00001`).
+
+`erp.invoice` therefore swallows exactly that one error and then proves the effect by
+diffing `sale.order.invoice_ids` before and after, raising if no invoice appeared. Client-
+side `allow_none=True` does not help — the failure is in the server's response writer.
+
+### 4. Vendor offers hang off the template, not the variant
+
+`product.supplierinfo.product_id` is usually `False`; the offer is attached to
+`product_tmpl_id`. Reading `product_id` naively yields `None`, which then poisons every
+downstream domain (`('product_id', 'in', [None])` → the marshalling error again).
+`erp.suppliers` resolves the template to a variant.
+
+### 5. `allow_none=True` on both proxies
+
+Odoo accepts nulls happily; stdlib `xmlrpc.client` refuses to send them by default.
+
+### Wizards actually observed
+
+On this dataset, `button_validate` and `button_mark_done` returned **no** wizard action
+once quantities were written correctly — the wizards exist for the cases where quantities
+are missing or partial. `erp._run_wizard` handles the ones Odoo can raise here:
+
+| wizard | method used | meaning |
+|---|---|---|
+| `stock.backorder.confirmation` | `process_cancel_backorder` | validate without a backorder |
+| `stock.immediate.transfer` | `process` | confirm the transfer as proposed |
+| `mrp.consumption.warning` | `action_confirm` | accept the consumption difference |
+| `mrp.immediate.production` | `process` | produce as proposed |
+
+An unknown wizard raises an `OdooError` naming the model rather than guessing a method.
 
 ## Dev curve decisions
 

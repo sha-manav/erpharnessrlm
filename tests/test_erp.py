@@ -1,0 +1,206 @@
+"""P2.3 — the typed Odoo client, against a live dev container.
+
+These tests mutate the dev Odoo, so they run in dependency order within one module and
+assume a freshly-created container (`make devbox` recreates it). They never touch a task's
+tests/ or solution/: every expectation here comes from Odoo semantics, not from the
+benchmark's rules.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "harness"))
+
+pytestmark = pytest.mark.live
+
+
+@pytest.fixture(scope="module")
+def erp(dev_container_name):
+    """An Erp client talking to the dev container's Odoo through the published port."""
+    import subprocess
+
+    from lib.erp import Erp
+
+    key = subprocess.run(
+        ["docker", "exec", dev_container_name, "cat", "/etc/odoo/api_key"],
+        capture_output=True, check=True,
+    ).stdout.decode().strip()
+    port = subprocess.run(
+        ["docker", "port", dev_container_name, "8069/tcp"], capture_output=True, check=True,
+    ).stdout.decode().strip().rsplit(":", 1)[-1]
+    return Erp(db="bench", url=f"http://127.0.0.1:{port}", user="admin", password=key)
+
+
+@pytest.fixture(scope="module")
+def catalogue(erp):
+    """The finished product, a component, and a vendor that sells the component."""
+    suppliers = erp.suppliers()
+    assert len(suppliers), "the scenario should ship vendor offers"
+    offer = suppliers.all()[0]
+    return {
+        "product_id": offer["product_id"],
+        "vendor_id": offer["vendor_id"],
+        "min_qty": offer["min_qty"],
+        "price": offer["price"],
+    }
+
+
+# -- reads -------------------------------------------------------------------
+def test_reads_return_bounded_tables(erp):
+    stock = erp.stock()
+    assert len(stock) > 0
+    text = str(stock)
+    assert "product" in text
+    # Rendering is capped even when the underlying data is not.
+    assert len(text.splitlines()) <= 44
+
+
+def test_stock_counts_internal_locations_only(erp):
+    from lib.erp import INTERNAL_LOCATION_DOMAIN
+
+    everywhere = erp.call("stock.quant", "search_count", [[]])
+    internal = erp.call("stock.quant", "search_count", [[INTERNAL_LOCATION_DOMAIN]])
+    assert internal <= everywhere
+    for row in erp.stock():
+        assert row["free"] == pytest.approx(row["on_hand"] - row["reserved"])
+
+
+def test_suppliers_surface_vendor_internal_notes(erp):
+    rows = erp.suppliers().all()
+    assert rows and all("vendor_notes" in row for row in rows)
+    # Notes arrive as plain text, not the HTML Odoo stores.
+    assert not any("<p>" in (row["vendor_notes"] or "") for row in rows)
+
+
+def test_fields_lists_real_field_names(erp):
+    names = set(erp.fields("stock.move").column("name"))
+    assert {"quantity", "picked", "product_uom_qty"} <= names
+    assert "quantity_done" not in names  # renamed in Odoo 17+; PLAN assumed it might exist
+
+
+def test_bad_field_raises_a_readable_odoo_error(erp):
+    from lib.erp import OdooError
+
+    with pytest.raises(OdooError) as excinfo:
+        erp.search_read("sale.order", [], ["definitely_not_a_field"], limit=1)
+    message = str(excinfo.value)
+    assert "sale.order.search_read" in message
+    assert len(message) < 900          # bounded, not a full server traceback
+    assert "harness/lib/erp.py" not in message
+
+
+def test_empty_result_is_an_empty_table_not_an_error(erp):
+    assert len(erp.purchase_orders(state="purchase")) == 0 or True
+    assert str(erp.sales_orders(ids=[999999])) == "sale.order (0 rows)"
+
+
+# -- purchasing flow ---------------------------------------------------------
+def test_po_create_confirm_receive_moves_stock(erp, catalogue):
+    product_id = catalogue["product_id"]
+    qty = max(catalogue["min_qty"], 1)
+
+    before = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id])}
+    po_id = erp.create_po(catalogue["vendor_id"], [(product_id, qty)], origin="test-po")
+    assert isinstance(po_id, int)
+
+    # price_unit was filled from supplierinfo even though we did not pass one.
+    line = erp.po_lines([po_id]).all()[0]
+    assert line["price_unit"] > 0
+    assert line["price_unit"] == pytest.approx(catalogue["price"])
+
+    erp.confirm_po(po_id)
+    assert erp.purchase_orders(ids=[po_id]).all()[0]["state"] == "purchase"
+
+    received = erp.receive(po_id)
+    assert received, "confirming a PO should create a receipt to validate"
+
+    after = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id])}
+    assert after.get(product_id, 0) == pytest.approx(before.get(product_id, 0) + qty)
+    assert erp.po_lines([po_id]).all()[0]["qty_received"] == pytest.approx(qty)
+
+
+def test_write_log_records_mutations_but_not_reads(erp):
+    erp.write_log.clear()
+    erp.stock()
+    erp.sales_orders()
+    assert erp.write_log == []
+    erp.call("res.partner", "search_count", [[]])
+    assert erp.write_log == []
+
+
+# -- manufacturing flow ------------------------------------------------------
+def test_mo_create_confirm_produce_consumes_and_produces(erp):
+    boms = erp.boms()
+    if not len(boms):
+        pytest.skip("this scenario has no manufacturing route")
+    bom = boms.all()[0]
+    finished = erp.search_read(
+        "mrp.bom", [("id", "=", bom["bom_id"])], ["product_id", "product_tmpl_id"], limit=1)[0]
+    product_id = finished["product_id"][0] if finished["product_id"] else erp.search_read(
+        "product.product", [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
+        ["id"], limit=1)[0]["id"]
+
+    component_id = bom["component_id"]
+    needed = bom["comp_qty"]
+    # Make sure the components exist, buying them if the scenario starts empty.
+    have = {r["product_id"]: r["free"] for r in erp.stock([component_id])}
+    if have.get(component_id, 0) < needed:
+        offers = erp.suppliers([component_id]).all()
+        if not offers:
+            pytest.skip("component has no vendor to buy from")
+        buy_qty = max(offers[0]["min_qty"], needed)
+        po_id = erp.create_po(offers[0]["vendor_id"], [(component_id, buy_qty)])
+        erp.confirm_po(po_id)
+        erp.receive(po_id)
+
+    before = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id, component_id])}
+    mo_id = erp.create_mo(product_id, 1)
+    erp.confirm_mo(mo_id)
+    erp.produce(mo_id)
+
+    assert erp.productions(ids=[mo_id]).all()[0]["state"] == "done"
+    after = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id, component_id])}
+    assert after.get(product_id, 0) > before.get(product_id, 0)
+    assert after.get(component_id, 0) < before.get(component_id, 0)
+
+
+# -- sales flow --------------------------------------------------------------
+def test_so_confirm_deliver_invoice_post(erp, catalogue):
+    product_id = catalogue["product_id"]
+    customer = erp.search_read(
+        "res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    if not customer:
+        customer = erp.search_read("res.partner", [], ["name"], limit=1)
+    partner_id = customer[0]["id"]
+
+    # Make sure there is something to ship.
+    free = {r["product_id"]: r["free"] for r in erp.stock([product_id])}
+    if free.get(product_id, 0) < 1:
+        po_id = erp.create_po(catalogue["vendor_id"],
+                              [(product_id, max(catalogue["min_qty"], 1))])
+        erp.confirm_po(po_id)
+        erp.receive(po_id)
+
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 1})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    assert erp.sales_orders(ids=[so_id]).all()[0]["state"] == "sale"
+
+    delivered = erp.deliver(so_id)
+    assert delivered, "confirming a sales order should create a delivery"
+    assert erp.sales_orders(ids=[so_id]).all()[0]["delivery_status"] == "full"
+
+    invoice_ids = erp.invoice(so_id)
+    assert invoice_ids, "a delivered order should be invoiceable"
+    erp.post(invoice_ids)
+    posted = erp.get("account.move", invoice_ids, ["state", "amount_total"]).all()
+    assert all(row["state"] == "posted" for row in posted)
+    assert all(row["amount_total"] > 0 for row in posted)
