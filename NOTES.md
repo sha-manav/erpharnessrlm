@@ -489,6 +489,42 @@ Three things this buys us that PLAN did not assume:
    silently violate "same model versions across configs". If drift shows up, pin with
    `"provider": {"order": [...], "allow_fallbacks": false}`.
 
+### Account restriction: only GLM-5.1 is reachable (2026-09-01)
+
+After the account-level provider allowlist was set (to control GLM-5.1's cost and
+quantization), **every model except `z-ai/glm-5.1` returns HTTP 404**:
+
+```
+No endpoints available matching your guardrail restrictions and data policy.
+```
+
+Tested and blocked: qwen3-32b, qwen3-30b-a3b-instruct-2507, qwen3-235b-a22b-2507,
+mistral-small-3.2-24b, gemma-3-27b, llama-3.3-70b, phi-4, hermes-4-70b, deepseek-v3.2-exp,
+glm-4.5-air, glm-4.6, glm-4.7, glm-4.7-flash, glm-5, glm-5.2, glm-5.3-flash.
+
+This is **not** the provider allowlist, and the diagnosis is worth keeping:
+
+* After DeepInfra was allowed, GLM-5.1 routed through it successfully — so DeepInfra as a
+  provider is permitted.
+* `qwen/qwen3-32b` is served by `deepinfra/fp8`, yet is still refused, with
+  `provider: {only: ["deepinfra"], data_collection: "allow"}` explicitly set.
+* Same provider, different model, opposite result → the gate is per-model/endpoint, i.e.
+  the "guardrail restrictions" or data-policy half of the message, not the provider list.
+* `GET /api/v1/key` shows no key-level restriction (`limit: null`, no model allowlist).
+
+**Consequence for the study:** the small model (P0.4's `qwen/qwen3-32b`) cannot run until
+this is lifted. The main result — our harness against pi on the *same* model — needs only
+`big`, so Phases 2-4 proceed on GLM-5.1 and the small-model column is added later if the
+account is opened.
+
+**Also measured:** with DeepInfra allowed, GLM-5.1 routes to it about a third of the time
+(6 probes: 3 GMICloud, 2 DeepInfra, 1 Chutes), and DeepInfra serves GLM-5.1 at **fp4**
+while GMICloud and Chutes serve fp8. That is the "same model across configs" risk in
+PLAN.md hard rule 9 becoming real. Our loop pins `quantizations: [fp8]` per request; pi
+(config A) cannot, so if the allowlist keeps DeepInfra, config A's trials are a mix of fp8
+and fp4. Preferred fix: allow **gmicloud + chutes + nebius** instead — nebius serves
+qwen3-32b and serves GLM-5.1 at fp8, so no fp4 endpoint is reachable at all.
+
 ### Provider routing (measured 2026-09-01)
 
 OpenRouter serves `z-ai/glm-5.1` from 14 upstreams that differ in **price** and in
