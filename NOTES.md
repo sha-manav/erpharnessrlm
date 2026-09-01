@@ -19,11 +19,26 @@ repos disagree, the repos win and the discrepancy is recorded under **Discrepanc
 | Vendored | vendor/pi (earendil-works/pi), vendor/erp-bench (agentic-labs/erp-bench) — both gitignored |
 
 ### Concurrency (N)
-Each ERP-Bench task declares `cpus = 3`, `memory_mb = 4096`. Docker Desktop currently gives the
-Linux VM only **7.75 GiB total**, so **N = 1** honest-to-spec task at a time (2 if memory limits are
-relaxed with `--memory ignore`). **Action required:** raise Docker Desktop's memory allocation
-(Settings → Resources) to ~32 GB to get N ≈ 6–7, or run the eval on Daytona (`--env daytona`,
-needs `DAYTONA_API_KEY`). Measure actual steady-state RSS of one task container before fixing N.
+
+Each ERP-Bench task declares `cpus = 3`, `memory_mb = 4096`, but **measured** usage is far lower:
+
+| State | Memory |
+|---|---|
+| idle, scenario loaded | **323 MiB** |
+| under a live pi agent trial (Odoo serving RPC) | **508 MiB** |
+| declared in task.toml | 4096 MiB |
+
+Docker's `--memory` is a cap, not a reservation, so the 7.75 GiB VM is not limited to one trial.
+Working figure: **N = 6** on the current 7.75 GiB VM, **N = 10-12** after raising Docker Desktop to
+32 GB. Two caveats before trusting a higher N: (a) config A's per-trial `npm install && npm run
+build` of pi-mono peaks well above the steady state, and (b) 18 host CPUs / 3 declared CPUs per
+task also caps useful parallelism around 6. Re-measure with `docker stats` during the first
+multi-task run and fix N here.
+
+**Action for the operator:** Docker Desktop's `settings-store.json` is TCC-protected (not writable
+from a terminal), so the memory bump must be made in **Docker Desktop -> Settings -> Resources**.
+Note that the eight long-running `frappe_docker-*` containers on this machine have restart policy
+`on-failure`, so a Docker restart will leave them stopped until they are started again.
 
 ---
 
@@ -306,18 +321,31 @@ First build of the image ≈ 4 min; image is 3.42 GB and is rebuilt per task id 
 
 ## pi
 
-The leaderboard harness. Harbor's built-in `pi` agent (`harbor.agents.installed`, `AgentName.PI`)
-is a `BaseInstalledAgent`: it installs Node 22 via nvm **inside the task container**, clones
-**`https://github.com/agentic-labs/pi-mono.git`** (`--depth 1`, `--branch <version>` when a version
-kwarg is given), `npm install && npm run build`, then `npm install -g ./packages/coding-agent`.
-Vendored at `vendor/pi-mono` (root package 0.0.3, `packages/coding-agent` **0.84.1**).
+The leaderboard harness. There are **two** installers with the same CLI, and they are not the same
+thing — this matters for which one config A uses:
 
-Invocation (from `harbor/agents/installed/pi.py`, mirrored in `erp-bench/agents/pi.py`):
+| | `-a pi` (Harbor built-in) | `-a agents.pi:Pi` (ERP-Bench's copy) |
+|---|---|---|
+| install | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version\|latest>` | `git clone --depth 1 agentic-labs/pi-mono` + `npm install && npm run build` + `npm i -g ./packages/coding-agent` |
+| pinning | **`--ak version=0.84.4`** pins an npm release | `--ak version=<git ref>`, but pi-mono publishes **no tags** |
+| measured setup time | **6.5 s** | full monorepo build (minutes per trial) |
+| extra flags | `--session-dir /logs/agent/pi/sessions`, `--thinking` | `--no-session`, `--thinking`, `--max-turns` (**the CLI has no such flag**) |
+| custom endpoints | yes (`model_api` kwarg + configured base URL) | no |
+
+**Decision for config A: Harbor's built-in `-a pi` with `--ak version=<pinned>`.** Same CLI, same
+four tools, same system prompt, but it pins to a published npm version instead of a moving default
+branch, and it costs 6.5 s per trial instead of a monorepo build. Both are recorded here because
+ERP-Bench's own README runs its copy; the harness under test is identical either way.
+
+Vendored source for reading: `vendor/pi-mono` (root package 0.0.3, `packages/coding-agent`
+**0.84.1**). The npm package installed by Harbor on 2026-08-31 resolved to **0.84.4**, which is why
+the version must be pinned before P1.2 rather than left at `@latest`.
+
+Invocation actually issued by Harbor's built-in agent (captured verbatim from `trial.log`):
 
 ```
-. ~/.nvm/nvm.sh; pi --print --mode json --no-session \
-   --provider <provider> --model <model> [--thinking <level>] '<instruction>' \
-   2>&1 </dev/null | stdbuf -oL tee /logs/agent/pi.txt
+. ~/.nvm/nvm.sh; pi --print --mode json --session-dir /logs/agent/pi/sessions \
+   --provider openrouter --model z-ai/glm-5.1 '<instruction>'
 ```
 
 - **Tools (4 built-ins): `read`, `bash`, `edit`, `write`.** No planning, no todo, no finish tool.
@@ -388,10 +416,27 @@ cache, unlike OpenRouter's `prompt_tokens`), `usage.cached = cacheRead`, `usage.
 P0.4 probe's `cached_tokens = 0` was only an artefact of its ~200-token prompt. Our loop's static
 system prefix should get the same treatment — confirm with real numbers in P2.9.
 
-**Reproducibility gap:** pi-mono has no release tags, and Harbor clones the default branch at HEAD,
-so config A drifts with upstream. Mitigation: record `pi --version` **and** the pi-mono commit SHA
-inside the container in `meta.json`, and run every config-A trial from one pinned commit (a thin
-`Pi` subclass that clones a fixed SHA) — see P1.2.
+**Reproducibility:** pin with `--ak version=0.84.4` (the version Harbor's `@latest` resolved to on
+2026-08-31) and record `agent_info.version` from every trial's `result.json` in `meta.json`. Without
+the pin, `@latest` moves under us mid-study and violates "same everything across configs".
+
+### Config A on the dev task — it works, and it wins
+
+`harbor run -p tasks/2000_easy_01_buy_only_baseline -a pi -m openrouter/z-ai/glm-5.1`:
+
+| | |
+|---|---|
+| reward | **overall_score 100.0, passed** (constraint 31/31, hygiene 6/6, 37/37 applicable rules) |
+| turns | 20, all of them `bash` |
+| tokens | input 215,123 (of which **cacheRead 168,960**), output 11,544 |
+| cost | **$0.143** |
+| timing | env setup 2.6 s · agent setup 6.5 s · agent 172.9 s · verifier 7.4 s |
+| pi version | 0.84.4 |
+
+So the *easy* dev task is solved by the stock harness — as expected for `01_buy_only_baseline`, the
+simplest of the 29 patterns. Budget signal for Phase 4: ~$0.15 and ~3 min per easy trial; harder
+patterns will cost more, so plan on roughly **$0.3–0.5 and 5–10 min per trial**, i.e. **$250–650**
+for the 800-trial minimum viable set.
 
 ## Models
 

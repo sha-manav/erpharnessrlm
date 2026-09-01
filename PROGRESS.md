@@ -5,13 +5,13 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 ## Phase 0 — Discovery
 - P0.1 Harbor                 | done   | 2026-08-31 | harbor 0.22.0; CLI flags, custom-agent interface, result schema in NOTES; nop run on dev task parses
 - P0.2 ERP-Bench dataset      | done   | 2026-08-31 | 300 tasks/29 patterns; dev task 2000_easy_01_buy_only_baseline; nop=0 oracle=100; Odoo XML-RPC+JSON2 and PG SELECT verified; minting verified
-- P0.3 pi harness             | doing  | 2026-08-31 | pi-mono 0.84.1 read: 4 tools, system prompt, no turn cap, temp unset. Run on dev task pending API key
+- P0.3 pi harness             | done   | 2026-08-31 | pi 0.84.4 via npm; 4 tools, prompt verbatim, no turn cap, temp unset; dev-task run: 100.0/passed, 20 turns, $0.143
 - P0.4 Model endpoints        | done   | 2026-08-31 | OpenRouter GLM-5.1 (big) + Qwen3-32B (small); 2-turn tool round trip OK; usage/cost/provider fields recorded
 - P0.5 Container abstraction  | done   | 2026-08-31 | host-side driver; DockerContainer round-trip verified on erpdev; HarborContainer bridges in P2.8
 
 ## Phase 1 — Reproduction and failure analysis
-- P1.1 Select eval100 and dev | todo   |            |
-- P1.2 Config A on eval100    | todo   |            |
+- P1.1 Select eval100 and dev | done   | 2026-08-31 | eval100 frozen: 100 ids, 29 patterns, 3-4 each; dev 200 / dev40 / dev10 / dev5; guard armed; tag eval100-frozen
+- P1.2 Config A on eval100    | next   |            | pin --ak version=0.84.4; needs scripts/run.py
 - P1.3 Ingest + leaderboard   | todo   |            |
 - P1.4 Stock failure analysis | todo   |            |
 
