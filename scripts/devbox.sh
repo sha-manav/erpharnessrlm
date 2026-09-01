@@ -36,15 +36,31 @@ build() {
 
 up() {
   build
-  if docker inspect "$NAME" >/dev/null 2>&1; then
-    docker start "$NAME" >/dev/null
+  if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
+    echo "devbox: $NAME already running"
   else
+    # Never `docker start` a stopped one. The entrypoint re-runs against a Postgres
+    # data directory it did not shut down cleanly and dies with "the database system
+    # is shutting down"; worse, /tmp/saas_setup_complete survives from the previous
+    # boot, so a marker-only readiness check reports success on a dead container.
+    docker rm -f "$NAME" >/dev/null 2>&1
     docker run -d --name "$NAME" --memory "$MEMORY" --cpus "$CPUS" \
       -p "$PORT:8069" "$IMAGE" >/dev/null || exit 1
   fi
   echo -n "devbox: waiting for Odoo scenario setup"
   for _ in $(seq 1 180); do
-    if docker exec "$NAME" test -f /tmp/saas_setup_complete 2>/dev/null; then
+    if ! docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+      echo " — CONTAINER EXITED"
+      docker logs --tail 20 "$NAME"
+      return 1
+    fi
+    # Both conditions: the setup marker AND a live Odoo that answers RPC.
+    if docker exec "$NAME" test -f /tmp/saas_setup_complete 2>/dev/null \
+       && docker exec "$NAME" python3 -c "
+import xmlrpc.client
+c = xmlrpc.client.ServerProxy('http://127.0.0.1:8069/xmlrpc/2/common')
+c.version()
+" >/dev/null 2>&1; then
       echo " — ready"
       echo "devbox: $NAME  odoo http://127.0.0.1:$PORT  db bench  admin/pass"
       return 0

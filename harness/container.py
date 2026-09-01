@@ -22,9 +22,11 @@ Both expose exactly:
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -220,3 +222,105 @@ class HarborContainer:
             return Path(local).read_bytes()
         finally:
             Path(local).unlink(missing_ok=True)
+
+
+class KernelError(RuntimeError):
+    """The kernel could not be reached or did not start."""
+
+
+class Kernel:
+    """Host-side client for `harness/kernel_server.py` running in the container.
+
+    The kernel listens on the container's loopback and Harbor publishes no ports, so every
+    call is `exec("python3 /harness/kernel_server.py --client")` with the JSON request on
+    stdin. That costs ~50-100 ms per tool call and buys a persistent namespace: the agent
+    keeps `plan`, `products`, `so_ids` between calls instead of re-deriving them in
+    throwaway scripts, which is where config A's token spend goes.
+    """
+
+    REMOTE_DIR = "/harness"
+    REMOTE_SERVER = f"{REMOTE_DIR}/kernel_server.py"
+
+    def __init__(
+        self,
+        container: Container,
+        port: int = 8765,
+        lib_modules: list[str] | None = None,
+        source_dir: Path | None = None,
+    ):
+        self.container = container
+        self.port = port
+        self.lib_modules = lib_modules
+        self.source_dir = Path(source_dir or Path(__file__).parent)
+        self.started = False
+
+    # -- lifecycle ------------------------------------------------------------
+    def install(self) -> None:
+        """Copy the kernel and the configured subset of lib/ into the container."""
+        self.container.exec(f"mkdir -p {self.REMOTE_DIR}/lib")
+        self.container.put_file(
+            self.REMOTE_SERVER, (self.source_dir / "kernel_server.py").read_bytes()
+        )
+        lib_dir = self.source_dir / "lib"
+        wanted = self.lib_modules
+        for path in sorted(lib_dir.glob("*.py")):
+            # __init__ always ships; it discovers whichever modules arrived.
+            if path.stem != "__init__" and wanted is not None and path.stem not in wanted:
+                continue
+            self.container.put_file(f"{self.REMOTE_DIR}/lib/{path.name}", path.read_bytes())
+
+    def start(self, env: dict[str, str] | None = None, timeout: int = 30) -> None:
+        self.install()
+        exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in (env or {}).items())
+        self.container.exec(
+            f"{exports} nohup python3 {self.REMOTE_SERVER} --port {self.port} "
+            f"> {self.REMOTE_DIR}/kernel.log 2>&1 & echo started"
+        )
+        deadline = time.time() + timeout
+        last = ""
+        while time.time() < deadline:
+            reply = self._request({"action": "ping"}, timeout=15)
+            if reply.get("pong"):
+                self.started = True
+                return
+            last = reply.get("stderr", "")
+            time.sleep(0.5)
+        log = self.container.exec(f"cat {self.REMOTE_DIR}/kernel.log").stdout
+        raise KernelError(f"kernel did not start within {timeout}s: {last}\n{log[-800:]}")
+
+    def stop(self) -> None:
+        self.container.exec(f"pkill -f 'kernel_server.py --port {self.port}' || true")
+        self.started = False
+
+    # -- calls ----------------------------------------------------------------
+    def _request(self, payload: dict, timeout: int = 180) -> dict:
+        result = self.container.exec(
+            f"python3 {self.REMOTE_SERVER} --client --port {self.port}",
+            stdin=json.dumps(payload),
+            timeout=timeout,
+        )
+        text = result.stdout.strip()
+        if not text:
+            return {"ok": False, "stdout": "", "stderr": result.stderr.strip() or "no reply"}
+        try:
+            return json.loads(text.splitlines()[-1])
+        except ValueError:
+            return {"ok": False, "stdout": "", "stderr": f"unparsable kernel reply: {text[:500]}"}
+
+    def run(self, code: str, timeout: int = 120, ns: str = "root") -> dict:
+        """Execute `code` in the persistent namespace `ns`.
+
+        Returns the kernel's reply dict: ok, stdout, stderr, elapsed, restarted.
+        The host-side wait is longer than the kernel's own so that a timeout is reported
+        by the kernel (which can say "state lost") rather than by the exec layer.
+        """
+        return self._request(
+            {"action": "run", "code": code, "timeout": timeout, "ns": ns},
+            timeout=timeout + 60,
+        )
+
+    def reset(self, ns: str = "root") -> dict:
+        return self._request({"action": "reset", "ns": ns})
+
+    def lib_status(self, ns: str = "root") -> dict:
+        return self._request({"action": "lib", "ns": ns})

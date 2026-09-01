@@ -16,8 +16,8 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P1.4 Stock failure analysis | todo   |            |
 
 ## Phase 2 — Harness v0
-- P2.1 Kernel                 | todo   |            |
-- P2.2 lib/fmt.py             | todo   |            |
+- P2.1 Kernel                 | done   | 2026-09-01 | TCP kernel in-container + host client; persistent namespaces, timeout rebuild, lib preload; 9 live tests
+- P2.2 lib/fmt.py             | done   | 2026-09-01 | Table (40-row cap, Odoo shapes) + PageStore (4k threshold, 3k pages); 13 unit tests
 - P2.3 lib/erp.py             | todo   |            |
 - P2.4 lib/check.py + finish  | todo   |            |
 - P2.5 lib/plan.py            | todo   |            |
