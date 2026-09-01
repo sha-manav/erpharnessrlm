@@ -1,0 +1,87 @@
+# Odoo 19 procurement and manufacturing playbook
+
+Everything here is Odoo behaviour, verified against this image. It is generic ERP practice,
+not guidance about any particular task.
+
+## Flows
+
+**Purchasing.** Create the order with lines carrying `price_unit` *and* `date_planned`
+(Odoo's onchange defaults do not fire over RPC — an omitted price silently becomes 0.00),
+then `button_confirm`, then validate the receipt picking.
+
+```python
+po = erp.create_po(vendor_id, [(product_id, qty)], date_planned="2026-09-08 08:00:00",
+                   origin="S00030")           # price looked up from supplierinfo
+erp.confirm_po(po); erp.receive(po)
+```
+
+**Manufacturing.** Create the MO, confirm, then produce. `erp.produce` reserves, sets
+`qty_producing`, **writes the component consumption explicitly** and marks done — without
+that last part Odoo finishes the order having consumed nothing.
+
+```python
+mo = erp.create_mo(product_id, qty, date_start="2026-09-05 08:00:00")
+erp.confirm_mo(mo); erp.produce(mo)
+```
+
+**Sales.** Confirm, deliver, invoice, post. An order that is delivered but not invoiced,
+or invoiced but left in draft, is unfinished work.
+
+```python
+erp.call("sale.order", "action_confirm", [[so_id]])
+erp.deliver(so_id)
+erp.post(erp.invoice(so_id))
+```
+
+## Planning before acting
+
+Enumerate every feasible option for each shortage before choosing one:
+
+* buy from each vendor that lists the product, at each `min_qty` tier;
+* make it, if a BOM exists — then recurse onto its components.
+
+For each option compute **total landed cost** and the **earliest completion date**
+(`order date + supplierinfo.delay` for a purchase; component availability plus build time
+for a manufacture). Compare every option against every due date, write the comparison as a
+table, and only then act. Cheapest-per-unit is not cheapest overall once minimum
+quantities, tier prices and lead times are in.
+
+`ortools` and `pulp` are installable if a comparison is genuinely combinatorial:
+`pip3 install --break-system-packages ortools`.
+
+## Data model
+
+| model | fields that matter |
+|---|---|
+| `product.product` / `product.template` | `default_code`, `list_price`, `standard_price`, `qty_available` |
+| `product.supplierinfo` | `partner_id`, `min_qty`, `price`, `delay` — **no `max_qty` exists**; a vendor's ceiling, if a task states one, is in `res.partner.comment` (Internal Notes) |
+| `mrp.bom` / `mrp.bom.line` | `product_qty` (the batch size the components are quoted for), `bom_line_ids` |
+| `sale.order` / `.line` | `commitment_date` is the customer due date; `delivery_status`, `invoice_status` |
+| `purchase.order` / `.line` | `date_planned` on both header and line; `origin` carries the source reference; `receipt_status` |
+| `mrp.production` | `product_qty`, `bom_id`, `date_start`, `qty_producing`, `components_availability` |
+| `stock.picking` / `stock.move` | receipts vs deliveries by `picking_type_id.code`; multi-step routes make several pickings per order |
+| `stock.quant` | `quantity`, `reserved_quantity` — **internal locations only**, or you will count stock that is not yours |
+| `account.move` | `move_type`, `state`, `invoice_origin` |
+
+## Gotchas
+
+* **Underscore methods are not RPC-callable.** Use the wizard, or the `erp` helper.
+* **Odoo 19 has no `quantity_done`.** A picking needs `quantity` + `picked = True` on each
+  move before `button_validate`, or it validates as a zero-quantity transfer that still
+  reads `state = done`.
+* **Many2one writes take an id; one2many writes take command tuples** `(0, 0, vals)`.
+* **Datetimes are UTC strings**, `"%Y-%m-%d %H:%M:%S"`.
+* **Names come from `ir.sequence`** — never invent `S00031`; read it back after create.
+* **Confirming a PO adds that vendor to the product's supplier list.** So "is this vendor
+  listed?" is not a test you can apply after the fact — decide before ordering.
+* **Components must exist before an MO starts**: on hand, or on a receipt landing earlier.
+* **Receipt date = order date + `supplierinfo.delay`.** A receipt that lands after the
+  customer due date it feeds does not cover that order, however correct the quantities are.
+* **Never hardcode ids obtained during a rehearsal.** A snapshot database numbers records
+  its own way; look records up by name or domain so the same function runs on both.
+
+## Working economically
+
+Every tool result is re-sent with every later turn. Reads return `Table`, which caps at 40
+rows — call `.all()` only when you need the rest, and `show("h3", 2)` to page long output.
+Do the arithmetic in the kernel and print the answer, not the raw rows.
