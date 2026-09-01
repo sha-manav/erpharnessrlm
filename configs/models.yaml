@@ -19,7 +19,8 @@ big:
   supports_prompt_cache: null      # measured in P0.4
   pricing_per_mtok: {input: 0.966, cached_input: null, output: 3.036}
   leaderboard_pass_at_1: 35.8      # published coding-mode number for GLM-5.1
-  est_cost_per_trial_usd: 0.35     # measured on config A: $0.23 (easy dev5) to $0.33 (eval100 mix)
+  est_cost_per_trial_usd: 0.73     # measured over 49 eval100 trials of config A (dev5's $0.23 was
+                                   # unrepresentative: dev5 is the five easiest patterns)
 
 small:
   base_url: https://openrouter.ai/api/v1
