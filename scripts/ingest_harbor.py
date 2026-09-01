@@ -94,6 +94,11 @@ def parse_pi_trajectory(pi_txt: Path) -> tuple[list[dict], dict, int]:
             continue
         if kind == "message_end":
             message = raw.get("message") or {}
+            # pi emits message_end for `user`, `assistant` and `toolResult`. Only
+            # assistant messages carry usage, and tool results already arrive via
+            # tool_execution_end — logging them here would duplicate every output.
+            if message.get("role") == "toolResult":
+                continue
             usage = message.get("usage") or {}
             cached = usage.get("cacheRead", 0) or 0
             uncached = usage.get("input", 0) or 0
