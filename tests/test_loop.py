@@ -258,3 +258,27 @@ def test_a_raising_tool_is_reported_to_the_model(tmp_path):
     tool_message = [m for m in loop.messages if m["role"] == "tool"][0]
     assert "ValueError" in tool_message["content"]
     assert "bad domain" in tool_message["content"]
+
+
+def test_show_serves_pages_from_the_loops_own_store(tmp_path):
+    """`show` is answered by the loop, not the dispatcher: the loop minted the handle."""
+    replies = [
+        FakeReply("bash", {"cmd": "dump"}),
+        FakeReply("show", {"handle": "h1", "page": 2}),
+        FakeReply("show", {"handle": "nope", "page": 1}),
+    ]
+    calls = []
+
+    def dispatch(name, args):
+        calls.append(name)
+        return "y" * 50_000 if name == "bash" else "dispatcher should not see this"
+
+    loop, _, traj = build(tmp_path, replies, step_cap=3, run_tool=dispatch)
+    loop.run()
+    traj.close()
+
+    assert calls == ["bash"]                       # show never reached the dispatcher
+    tool_messages = [m["content"] for m in loop.messages if m["role"] == "tool"]
+    assert tool_messages[1].startswith("y")
+    assert "page 2 of" in tool_messages[1]
+    assert "no such handle" in tool_messages[2]

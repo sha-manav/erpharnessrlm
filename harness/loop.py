@@ -171,10 +171,17 @@ class Loop:
                     args = {}
 
                 started = time.time()
-                try:
-                    output = self.run_tool(name, args)
-                except Exception as exc:  # noqa: BLE001 - a tool failure is data
-                    output = f"tool {name} raised {type(exc).__name__}: {exc}"
+                if name == "show":
+                    # Served here rather than by the dispatcher: the page store that minted
+                    # the handle lives in the loop, because the loop is what truncated the
+                    # output in the first place.
+                    output = self.pages.show(
+                        str(args.get("handle", "")), int(args.get("page") or 1))
+                else:
+                    try:
+                        output = self.run_tool(name, args)
+                    except Exception as exc:  # noqa: BLE001 - a tool failure is data
+                        output = f"tool {name} raised {type(exc).__name__}: {exc}"
                 latency = round(time.time() - started, 2)
 
                 shown = self.pages.capture(output or "(no output)")
