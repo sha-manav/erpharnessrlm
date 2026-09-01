@@ -368,6 +368,26 @@ from ERP-Bench's own `instruction.md`. That is exactly the "generic coding-agent
 | Output for accounting | `--mode json` NDJSON on stdout; Harbor sums `message_end` events' `usage.{input,output,cacheRead,cacheWrite}` and `usage.cost.total` into `AgentContext` |
 | Providers | anthropic, openai, google, openrouter, groq, fireworks, huggingface, mistral, xai, amazon-bedrock, github-copilot — selected by the `provider/` prefix of `-m` |
 
+### pi trajectory format (what `ingest_harbor.py` parses)
+
+`--mode json` writes NDJSON to `/logs/agent/pi.txt` (mounted to `<trial>/agent/pi.txt`). Event
+`type`s observed on a live run: `session`, `agent_start`, `turn_start`, `message_start`,
+`message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `turn_end`.
+
+- One **step** = one `turn_start` … `turn_end` pair.
+- `message_end` carries `message.role`, `message.content` (a list; tool calls appear as
+  `{"type": "toolCall", "name": ..., ...}`) and `message.usage = {input, output, cacheRead,
+  cacheWrite, cost: {total}}`. Harbor's `Pi.populate_context_post_run` sums exactly these.
+- pi also writes a session directory under `/logs/agent/pi/`.
+
+Mapping to our common schema: `usage.input = input + cacheRead` (pi reports `input` **excluding**
+cache, unlike OpenRouter's `prompt_tokens`), `usage.cached = cacheRead`, `usage.output = output`.
+
+**Prompt caching is real here.** A live pi run on the dev task with GLM-5.1 reported
+`cacheRead = 11,264` of `input + cacheRead = 23,162` prompt tokens within the first 7 turns, so the
+P0.4 probe's `cached_tokens = 0` was only an artefact of its ~200-token prompt. Our loop's static
+system prefix should get the same treatment — confirm with real numbers in P2.9.
+
 **Reproducibility gap:** pi-mono has no release tags, and Harbor clones the default branch at HEAD,
 so config A drifts with upstream. Mitigation: record `pi --version` **and** the pi-mono commit SHA
 inside the container in `meta.json`, and run every config-A trial from one pinned commit (a thin
