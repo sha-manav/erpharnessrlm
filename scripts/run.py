@@ -51,6 +51,67 @@ def load_env(path: Path) -> dict[str, str]:
     return env
 
 
+def openrouter_balance(api_key: str) -> float | None:
+    """Remaining OpenRouter credit in USD, or None if it cannot be determined."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read()).get("data", {})
+    except (urllib.error.URLError, ValueError, TimeoutError):
+        return None
+    total = data.get("total_credits")
+    used = data.get("total_usage")
+    if total is None or used is None:
+        return None
+    return float(total) - float(used)
+
+
+def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool) -> dict:
+    """Refuse to start a run the account cannot pay for.
+
+    Learned the hard way: a run that exhausts its balance mid-flight does not fail loudly.
+    Every remaining trial returns HTTP 402 before its first model call, lands in the results
+    with one step and $0 spent, and the aggregate reports a plausible-looking low pass rate
+    that is really a billing artefact.
+
+    OpenRouter reserves credit for the *requested* `max_tokens`, not for what is used — pi
+    asks for ~180k tokens per call — so a balance that looks adequate in expectation can
+    still be rejected. Hence the floor on top of the estimate.
+    """
+    if "openrouter.ai" not in model.get("base_url", ""):
+        return {"checked": False}
+
+    balance = openrouter_balance(api_key)
+    per_trial = model.get("est_cost_per_trial_usd", 0.35)
+    needed = n_tasks * per_trial
+    floor = 5.0  # headroom for max_tokens reservation on the last few calls
+    report = {
+        "checked": True,
+        "balance_usd": balance,
+        "estimated_usd": round(needed, 2),
+        "required_usd": round(max(needed * 1.2, needed + floor), 2),
+    }
+    if balance is None:
+        print("warning: could not read the OpenRouter balance; continuing unchecked")
+        return report
+    print(f"credit: ${balance:.2f} available, ~${needed:.2f} estimated for {n_tasks} trials")
+    if balance < report["required_usd"] and not allow_low:
+        raise SystemExit(
+            f"refusing to start: ${balance:.2f} available but ${report['required_usd']:.2f} "
+            f"needed for {n_tasks} trials at ~${per_trial:.2f} each (plus ${floor:.0f} of "
+            "headroom, because OpenRouter reserves credit for the requested max_tokens).\n"
+            "Add credits at https://openrouter.ai/settings/credits, or pass --allow-low-credit "
+            "to run anyway and accept that trials may die with HTTP 402."
+        )
+    return report
+
+
 def resolve_config(configs: dict, name: str) -> dict:
     if name not in configs:
         raise SystemExit(f"unknown config '{name}'; have {sorted(k for k in configs if k != 'defaults')}")
@@ -114,6 +175,8 @@ def main() -> int:
     parser.add_argument("--background", action="store_true", help="detach and return immediately")
     parser.add_argument("--allow-dirty", action="store_true", help="permit an eval run from a dirty tree")
     parser.add_argument("--dry-run", action="store_true", help="print the command and exit")
+    parser.add_argument("--allow-low-credit", action="store_true",
+                        help="start even if the provider balance looks too small")
     parser.add_argument("extra", nargs="*", help="extra flags passed through to harbor")
     args = parser.parse_args()
 
@@ -135,6 +198,12 @@ def main() -> int:
     if guard.returncode != 0:
         sys.stderr.write(guard.stderr.decode())
         raise SystemExit("guard failed; not starting a run")
+
+    env_file = load_env(REPO_ROOT / ".env")
+    api_key = env_file.get(model["api_key_env"]) or os.environ.get(model["api_key_env"], "")
+    if not api_key:
+        raise SystemExit(f"{model['api_key_env']} is not set (looked in .env and the environment)")
+    credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"{args.config}__{args.model}__{args.set}__{stamp}"
@@ -161,6 +230,7 @@ def main() -> int:
         "harbor_version": subprocess.run(["harbor", "--version"], capture_output=True)
         .stdout.decode().strip(),
         "command": " ".join(shlex.quote(part) for part in cmd),
+        "credit_preflight": credit,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
         "terminal_reasons": {},
@@ -172,7 +242,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    env = {**os.environ, **load_env(REPO_ROOT / ".env")}
+    env = {**os.environ, **env_file}
     env["PYTHONPATH"] = str(REPO_ROOT)
     env["PATH"] = f"{Path.home()}/.local/bin:{env.get('PATH', '')}"
 

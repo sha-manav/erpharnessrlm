@@ -73,11 +73,11 @@ def rows_for_run(run_dir: Path, meta: dict[str, dict[str, str]]) -> list[dict]:
 def summarise(rows: list[dict]) -> None:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
-        groups[(row["config"], row["model_key"])].append(row)
+        groups[(row["config"], row["model_key"], row["run_id"].split("__")[2] if row["run_id"].count("__") >= 2 else "?")].append(row)
 
-    print(f"\n{'config':<16}{'model':<7}{'n':>4}{'pass@1':>9}{'reward':>9}"
+    print(f"\n{'config':<16}{'model':<7}{'set':<10}{'n':>4}{'pass@1':>9}{'reward':>9}"
           f"{'steps':>7}{'$/task':>9}  terminal reasons")
-    for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]))):
+    for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]), str(k[2]))):
         group = groups[key]
         n = len(group)
         passes = [r["pass"] for r in group if r["pass"] is not None]
@@ -92,7 +92,7 @@ def summarise(rows: list[dict]) -> None:
         mean_steps = f"{sum(steps) / len(steps):.1f}" if steps else "-"
         mean_cost = f"{sum(costs) / len(costs):.3f}" if costs else "-"
         mix = " ".join(f"{k}:{v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1]))
-        print(f"{str(key[0]):<16}{str(key[1]):<7}{n:>4}{pass_rate:>9}{mean_reward:>9}"
+        print(f"{str(key[0]):<16}{str(key[1]):<7}{str(key[2]):<10}{n:>4}{pass_rate:>9}{mean_reward:>9}"
               f"{mean_steps:>7}{mean_cost:>9}  {mix}")
 
         api_errors = reasons.get("api_error", 0) + reasons.get("crash", 0)
@@ -112,6 +112,12 @@ def main() -> int:
     runs_dir = Path(args.runs)
     rows: list[dict] = []
     for run_dir in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
+        # Runs marked invalid (e.g. an out-of-credit provider failure) are excluded:
+        # their numbers measure the outage, not the harness.
+        run_meta = run_dir / "meta.json"
+        if run_meta.exists() and (json.loads(run_meta.read_text()).get("invalid")):
+            print(f"skipping {run_dir.name}: marked invalid in meta.json")
+            continue
         rows.extend(rows_for_run(run_dir, meta))
 
     if not rows:
