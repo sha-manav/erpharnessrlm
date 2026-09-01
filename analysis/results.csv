@@ -1,0 +1,6 @@
+task_id,pattern,difficulty,config,model,model_key,pass,reward,steps,delegations,tokens_in,tokens_cached,tokens_out,cost_usd,wallclock_s,terminal_reason,commit,run_id
+2004_easy_01_buy_only_baseline,01_buy_only_baseline,easy,A_pi,z-ai/glm-5.1,big,False,20.97,11,0,128837,84480,12813,0.126398,184.92,finish,d423c98fa6d4162b6258102ab7650c8dd4243a9d,A_pi__big__dev5__20260901T062640Z
+2014_easy_02_buy_only_immediate_invoicing,02_buy_only_immediate_invoicing,easy,A_pi,z-ai/glm-5.1,big,True,100.0,10,0,144411,111104,13927,0.123116,199.63,finish,d423c98fa6d4162b6258102ab7650c8dd4243a9d,A_pi__big__dev5__20260901T062640Z
+2017_easy_03_buy_only_fixed_downpayment,03_buy_only_fixed_downpayment,easy,A_pi,z-ai/glm-5.1,big,False,22.84,26,0,434856,374784,21957,0.25034,334.48,finish,d423c98fa6d4162b6258102ab7650c8dd4243a9d,A_pi__big__dev5__20260901T062640Z
+2024_easy_04_buy_only_percentage_downpayment,04_buy_only_percentage_downpayment,easy,A_pi,z-ai/glm-5.1,big,True,100.0,25,0,597134,475136,27269,0.372885,379.26,finish,d423c98fa6d4162b6258102ab7650c8dd4243a9d,A_pi__big__dev5__20260901T062640Z
+2035_medium_05_screened_buy_only_all_seeded,05_screened_buy_only_all_seeded,medium,A_pi,z-ai/glm-5.1,big,True,100.0,17,0,364256,229888,14389,0.280078,200.84,finish,d423c98fa6d4162b6258102ab7650c8dd4243a9d,A_pi__big__dev5__20260901T062640Z
