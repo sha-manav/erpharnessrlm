@@ -56,16 +56,22 @@ def load_results(run_dirs: list[Path]) -> dict[tuple, dict]:
     return merged
 
 
-def write_reproduction(results: dict[tuple, dict], tasks_dir: Path, out: Path) -> None:
+def write_reproduction(results: dict[tuple, dict], tasks_dir: Path, out: Path,
+                       eval_ids: set[str]) -> None:
+    # Only the frozen eval set belongs in this table. Grouping by (config, model) alone
+    # silently folds in dev-set trials -- the dev5 smoke run shares config A and the big
+    # model, and turned a 100-task result into "n = 105".
     groups: dict[tuple, list[dict]] = defaultdict(list)
-    for (config, model_key, _), result in results.items():
-        groups[(config, model_key)].append(result)
+    for (config, model_key, task_id), result in results.items():
+        if task_id in eval_ids:
+            groups[(config, model_key)].append(result)
 
     lines = [
         "# Reproduction of the published ERP-Bench numbers (P1.3)",
         "",
         "Config A is Harbor's built-in `pi` agent (pinned to npm 0.84.4), the same generic",
-        "coding-agent harness the Anchor paper used, on the frozen 100-task subset.",
+        "coding-agent harness the Anchor paper used, on the frozen 100-task subset",
+        "(`configs/eval100.txt`). Development trials are excluded.",
         "",
         "| config | model | n | pass@1 | published | Δ | mean reward | mean steps | $/task |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|",
@@ -78,6 +84,7 @@ def write_reproduction(results: dict[tuple, dict], tasks_dir: Path, out: Path) -
         model = rows[0].get("model", "")
         published = PUBLISHED.get(model)
         delta = f"{pass_rate - published:+.1f}" if published else "—"
+        interrupted = [r for r in rows if r.get("terminal_reason") in ("timeout", "crash")]
         lines.append(
             f"| {config} | {model} | {n} | {pass_rate:.1f} | "
             f"{published if published else '—'} | {delta} | "
@@ -91,6 +98,18 @@ def write_reproduction(results: dict[tuple, dict], tasks_dir: Path, out: Path) -
                 f"- **{config} / {model}**: {pass_rate:.1f} against {published} published, "
                 f"a gap of {abs(pass_rate - published):.1f} points — "
                 f"{'within' if ok else 'OUTSIDE'} the ±{TOLERANCE:g}-point tolerance."
+            )
+        if interrupted:
+            clean = [r for r in rows if r not in interrupted]
+            clean_rate = 100 * sum(1 for r in clean if r.get("pass")) / len(clean)
+            verdicts.append(
+                f"- {len(interrupted)} of those {config}/{model} trials were **interrupted** "
+                f"(terminal reason timeout/crash) when a run was stopped by hand rather than "
+                f"by the agent's own failure: "
+                + ", ".join(f"`{r['task_id']}`" for r in interrupted)
+                + f". Their verifier still scored whatever state existed at the kill, which "
+                f"biases the figure down. Excluding them: **{clean_rate:.1f}** over "
+                f"{len(clean)} trials. Re-running those tasks cleanly would remove the caveat."
             )
 
     lines += ["", "## Verdict", ""] + (verdicts or ["- no model with a published number"])
@@ -118,7 +137,7 @@ def write_reproduction(results: dict[tuple, dict], tasks_dir: Path, out: Path) -
 
     by_pattern: dict[str, list[dict]] = defaultdict(list)
     for (config, model_key, task_id), result in results.items():
-        if config != "A_pi" or model_key != "big":
+        if config != "A_pi" or model_key != "big" or task_id not in eval_ids:
             continue
         meta = read_task_meta(tasks_dir / task_id) if (tasks_dir / task_id).exists() else {}
         by_pattern[meta.get("task_pattern", "?")].append(result)
@@ -159,7 +178,12 @@ def main() -> int:
     print(f"{len(results)} unique (config, model, task) results")
 
     subprocess.run([sys.executable, str(REPO_ROOT / "scripts/aggregate.py")], check=True)
-    write_reproduction(results, Path(args.tasks_dir), REPO_ROOT / "analysis/reproduction.md")
+    eval_ids = {
+        line.strip() for line in (REPO_ROOT / "configs/eval100.txt").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    write_reproduction(results, Path(args.tasks_dir), REPO_ROOT / "analysis/reproduction.md",
+                       eval_ids)
     if not args.no_trajectories:
         pack_trajectories(run_dirs, REPO_ROOT / "analysis/trajectories")
     return 0

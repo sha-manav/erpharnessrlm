@@ -701,7 +701,29 @@ Measured cost per config-A trial: **$0.23** on the five easiest dev tasks, **~$0
 eval100 mix before the money ran out. `est_cost_per_trial_usd` in `configs/models.yaml` is set
 from these.
 
-*(P1.3 result to be filled after the config-A eval100 runs.)*
+### Result (2026-09-01)
+
+| config | model | n | pass@1 | published | Δ | mean reward | steps | $/task |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| A_pi | z-ai/glm-5.1 | 100 | **39.0** | 35.8 | **+3.2** | 54.7 | 27.7 | 0.624 |
+| A_pi | qwen/qwen3-32b | 67 | 0.0 | — | — | 1.2 | 15.0 | 0.007 |
+
+**Reproduction holds**: 39.0 against 35.8, a 3.2-point gap inside the ±8-point tolerance and
+well within the ±4.8 points (1 SE) that a 1-trial, 100-task estimate carries by construction.
+Full write-up in `analysis/reproduction.md`.
+
+Two caveats recorded rather than smoothed over:
+
+* Four trials were **interrupted** by a run being stopped by hand (`2067`, `2074`, `2149`,
+  `2174`), so their verifier scored whatever state existed at the kill. That biases the
+  figure down; excluding them gives 40.6 over 96 trials. Re-running those four cleanly
+  (~$3) would remove the caveat.
+* The `qwen/qwen3-32b` run was **stopped at n = 67** once GLM-5.1 finished. It had passed
+  0 tasks at a mean reward of 1.2, so the remaining trials would have refined a floor
+  result at ~4 trials/hour. The figure is reported with its real n, not as 100.
+
+Coverage is complete: 100 unique eval100 task ids across three fp8-only batches
+(49 + 34 + 17), no duplicates, none from outside the frozen set.
 
 ## Odoo wizards and other Odoo-19 traps
 

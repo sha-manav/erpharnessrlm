@@ -44,6 +44,10 @@ def rows_for_run(run_dir: Path, meta: dict[str, dict[str, str]]) -> list[dict]:
     rows = []
     for result_path in sorted(run_dir.glob("*/result.json")):
         result = json.loads(result_path.read_text())
+        if result.get("reward") is None:
+            # A trial with no verifier reward never completed (killed mid-flight); it is
+            # not a measurement, and counting it inflates n and deflates every mean.
+            continue
         task_id = result["task_id"]
         task_meta = meta.get(task_id, {})
         tokens = result.get("tokens") or {}

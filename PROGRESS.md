@@ -11,8 +11,8 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 
 ## Phase 1 — Reproduction and failure analysis
 - P1.1 Select eval100 and dev | done   | 2026-08-31 | eval100 frozen: 100 ids, 29 patterns, 3-4 each; dev 200 / dev40 / dev10 / dev5; guard armed; tag eval100-frozen
-- P1.2 Config A on eval100    | doing  | 2026-09-01 | big: 49 done (batch 1) + batch 2 running. small: INVALID (provider allowlist blocks qwen3-32b); blocked on account setting
-- P1.3 Ingest + leaderboard   | todo   |            |
+- P1.2 Config A on eval100    | done   | 2026-09-01 | big 100/100 (3 fp8-only batches); small stopped at 67/100 (0 passes, floor result)
+- P1.3 Ingest + leaderboard   | done   | 2026-09-01 | GLM-5.1 39.0 vs 35.8 published (+3.2, within +/-8); analysis/reproduction.md
 - P1.4 Stock failure analysis | todo   |            |
 
 ## Phase 2 — Harness v0
