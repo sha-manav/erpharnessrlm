@@ -1,0 +1,69 @@
+# Harness configurations under test.
+#
+# `runner: pi` means Harbor's built-in pi agent (the generic coding-agent baseline).
+# Every other config runs harness/agent.py and reads the keys below:
+#
+#   tools       which tool schemas are exposed to the model (harness/tools.py)
+#   prompts     which files under harness/prompts/ are concatenated into the system prompt
+#   lib         which modules under harness/lib/ are preloaded into the kernel;
+#               a missing module is tolerated and reported in result.json.lib_active
+#   briefing    render prompts/briefing.py into the first user message
+#   ledger_k    reinject plan.summary() every k steps (0 disables)
+#   finish_gate finish() refuses while hard checks fail (up to 3 attempts)
+#
+# `inherit` copies the named config and overrides the keys given.
+#
+# Caps are shared by every non-pi config so the comparison is about the harness, not
+# about how long each one is allowed to run.
+
+defaults:
+  step_cap: 150            # pi has no turn cap; 150 is well above its observed 20 turns
+  token_cap: 2500000       # total input tokens (cached + uncached) per trajectory
+  bash_timeout_s: 120
+  kernel_timeout_s: 120
+  finish_gate: false
+  ledger_k: 0
+  briefing: false
+  lib: []
+
+A_pi:
+  runner: pi
+  # Pinned: Harbor's default is @latest, which moved from 0.84.1 to 0.84.4 during Phase 0.
+  pi_version: "0.84.4"
+
+B_bash:
+  tools: [bash, finish]
+  prompts: [contract_min]
+  lib: []
+  briefing: false
+  ledger_k: 0
+
+C_full:
+  tools: [python, bash, show, finish]
+  prompts: [contract, playbook, schema_card, library_docs]
+  lib: [erp, db, state, check, plan, delegate]
+  briefing: true
+  ledger_k: 15
+  finish_gate: true
+
+C_minus_dry:
+  inherit: C_full
+  lib: [erp, db, plan, delegate]
+  finish_gate: false
+
+C_minus_doc:
+  inherit: C_full
+  prompts: [contract, library_docs]
+  briefing: false
+
+C_minus_del:
+  inherit: C_full
+  lib: [erp, db, state, check, plan]
+
+C_minus_brief:
+  inherit: C_full
+  briefing: false
+
+B_plus_doc:
+  inherit: B_bash
+  prompts: [contract_min, playbook]

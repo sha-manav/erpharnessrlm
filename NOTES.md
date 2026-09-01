@@ -29,8 +29,12 @@ Each ERP-Bench task declares `cpus = 3`, `memory_mb = 4096`, but **measured** us
 | declared in task.toml | 4096 MiB |
 
 Docker's `--memory` is a cap, not a reservation, so the 7.75 GiB VM is not limited to one trial.
-Working figure: **N = 6** on the current 7.75 GiB VM, **N = 10-12** after raising Docker Desktop to
-32 GB. Two caveats before trusting a higher N: (a) config A's per-trial `npm install && npm run
+Measured with **4 concurrent pi trials**: 437-467 MiB each (1.8 GiB of 7.75 GiB used), CPU 0.1-5%
+per container — the agent phase is dominated by waiting on the model, not by Odoo. Images share
+their base layers, so 6 task images cost 7 GB total, not 6 x 3.4 GB.
+
+Working figure: **N = 8** is safe on the current 7.75 GiB VM; **N = 10-12** after raising Docker
+Desktop to 32 GB. The memory bump is a comfort margin, not a prerequisite. Two caveats before trusting a higher N: (a) config A's per-trial `npm install && npm run
 build` of pi-mono peaks well above the steady state, and (b) 18 host CPUs / 3 declared CPUs per
 task also caps useful parallelism around 6. Re-measure with `docker stats` during the first
 multi-task run and fix N here.
