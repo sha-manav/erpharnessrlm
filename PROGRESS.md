@@ -11,7 +11,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 
 ## Phase 1 — Reproduction and failure analysis
 - P1.1 Select eval100 and dev | done   | 2026-08-31 | eval100 frozen: 100 ids, 29 patterns, 3-4 each; dev 200 / dev40 / dev10 / dev5; guard armed; tag eval100-frozen
-- P1.2 Config A on eval100    | blocked| 2026-09-01 | first attempt INVALID (OpenRouter ran out of credit mid-run, 66/100 trials got HTTP 402); needs account funded, then rerun both models
+- P1.2 Config A on eval100    | doing  | 2026-09-01 | big: 49 done (batch 1) + batch 2 running. small: INVALID (provider allowlist blocks qwen3-32b); blocked on account setting
 - P1.3 Ingest + leaderboard   | todo   |            |
 - P1.4 Stock failure analysis | todo   |            |
 
@@ -19,8 +19,8 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.1 Kernel                 | done   | 2026-09-01 | TCP kernel in-container + host client; persistent namespaces, timeout rebuild, lib preload; 9 live tests
 - P2.2 lib/fmt.py             | done   | 2026-09-01 | Table (40-row cap, Odoo shapes) + PageStore (4k threshold, 3k pages); 13 unit tests
 - P2.3 lib/erp.py             | done   | 2026-09-01 | typed client over stdlib xmlrpc; PO/MO/SO flows pass live; found 5 Odoo-19 silent-wrong-state traps (NOTES)
-- P2.4 lib/check.py + finish  | todo   |            |
-- P2.5 lib/plan.py            | todo   |            |
+- P2.4 lib/check.py + finish  | done   | 2026-09-01 | Appendix B 1/3/4/7 + finish gate (3 refusals); 12 live tests; found Odoo auto-adds vendors on PO confirm
+- P2.5 lib/plan.py            | done   | 2026-09-01 | ledger with bounded summary for reinjection; 9 unit tests
 - P2.6 Prompts                | todo   |            |
 - P2.7 tools.py + loop.py     | todo   |            |
 - P2.8 agent.py (Harbor)      | todo   |            |

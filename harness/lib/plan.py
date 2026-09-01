@@ -69,10 +69,14 @@ class Plan:
         done = [i for i in self.items if i["status"] == "done"]
         open_items = [i for i in self.items if i["status"] != "done"]
         lines = [f"{len(done)}/{len(self.items)} done"]
-        for item in open_items[: SUMMARY_LINES - 1]:
+        # SUMMARY_LINES caps the whole block, header and overflow note included: this text
+        # is re-injected every ledger_k steps, so it has to stay a fixed small cost.
+        room = SUMMARY_LINES - 1
+        shown = open_items if len(open_items) <= room else open_items[: room - 1]
+        for item in shown:
             note = f" — {item['note']}" if item["note"] else ""
             lines.append(f"[{item['status']}] {item['id']}. {item['text']}{note}")
-        hidden = len(open_items) - (SUMMARY_LINES - 1)
+        hidden = len(open_items) - len(shown)
         if hidden > 0:
             lines.append(f"(+{hidden} more open)")
         return "\n".join(lines)
