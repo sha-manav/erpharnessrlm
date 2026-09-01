@@ -1,0 +1,398 @@
+# NOTES.md — facts discovered
+
+Everything here is measured from the real repos/tools, not assumed. When the plan and the
+repos disagree, the repos win and the discrepancy is recorded under **Discrepancies**.
+
+---
+
+## Environment (this machine)
+
+| Fact | Value |
+|---|---|
+| Host | macOS (darwin 25.5.0), aarch64, 18 CPUs, 48 GB RAM |
+| Docker | 29.7.2, compose v5.4.0, Docker Desktop, arch aarch64 |
+| **Docker Desktop VM memory** | **7.75 GiB** — the binding constraint, see *Concurrency* |
+| Python | 3.14.7 (system), 3.11 available at /opt/homebrew/bin/python3.11 |
+| uv | 0.12.8, installed to ~/.local/bin |
+| harbor | 0.22.0 (`uv tool install harbor`), binaries `harbor`, `hb`, `hr` |
+| Repo | /Users/manavshah/erpharnessrlm (git initialised 2026-08-31) |
+| Vendored | vendor/pi (earendil-works/pi), vendor/erp-bench (agentic-labs/erp-bench) — both gitignored |
+
+### Concurrency (N)
+Each ERP-Bench task declares `cpus = 3`, `memory_mb = 4096`. Docker Desktop currently gives the
+Linux VM only **7.75 GiB total**, so **N = 1** honest-to-spec task at a time (2 if memory limits are
+relaxed with `--memory ignore`). **Action required:** raise Docker Desktop's memory allocation
+(Settings → Resources) to ~32 GB to get N ≈ 6–7, or run the eval on Daytona (`--env daytona`,
+needs `DAYTONA_API_KEY`). Measure actual steady-state RSS of one task container before fixing N.
+
+---
+
+## Harbor
+
+Docs: https://www.harborframework.com/ ("from the makers of terminal-bench"). Install:
+`uv tool install harbor`. Package source read directly at
+`~/.local/share/uv/tools/harbor/lib/python3.14/site-packages/harbor/`.
+
+### CLI flags that matter
+
+| Need | Flag |
+|---|---|
+| Local task/dataset dir | `-p, --path <dir>` (a single task dir or a dir of task dirs) |
+| Remote dataset | `-d, --dataset name@version`, `--repo org/name`, `-t, --task org/name` |
+| **Task filtering by id** | `-i, --include-task-name <glob>` (repeatable), `-x, --exclude-task-name`, `-l, --n-tasks` |
+| Agent | `-a, --agent <name>` **or a custom import path `module.path:ClassName`** |
+| Model | `-m, --model <str>` (pi wants `provider/model`) |
+| Agent kwargs | `--ak key=value` (repeatable) → passed to the agent's `__init__` |
+| Agent env vars | `--ae KEY=VALUE` (repeatable) → `extra_env` |
+| Concurrency | `-n, --n-concurrent` (default 4); `--n-concurrent-agents` caps agent phase only |
+| Output dir | `-o, --jobs-dir <path>` (default `jobs/`) |
+| Job name | `--job-name` (default timestamp) |
+| Timeouts | `--timeout-multiplier`, `--agent-timeout-multiplier`, `--verifier-timeout-multiplier`, `--environment-build-timeout-multiplier` |
+| Environment | `--env docker` (default) / `daytona` / others; `--no-delete` keeps containers; `--force-build` |
+| Resources | `--override-cpus`, `--override-memory-mb`, `--cpus/--memory <auto\|limit\|request\|guarantee\|ignore>` |
+| **Custom verifier** | `--verifier module.path:ClassName`, `--verifier-kwarg k=v` |
+| Attempts | `-k, --n-attempts` |
+| Misc | `-y` auto-confirm, `-q` quiet, `--debug`, `--env-file`, `--print-config` |
+
+Custom import paths are resolved with `importlib.import_module` inside **harbor's own venv**, so the
+module must be on `PYTHONPATH` (we export `PYTHONPATH=<repo root>`).
+
+### Output layout
+
+```
+<jobs-dir>/<job-name>/
+  result.json  config.json  lock.json  job.log
+  <task_id>__<shortuuid>/          # one trial dir per task
+    result.json      # TrialResult
+    config.json  lock.json  trial.log  exception.txt (on failure)
+    agent/           # mounted to /logs/agent in the container — agent writes logs here
+    verifier/        # mounted to /logs/verifier — reward.txt / reward.json land here
+    artifacts/       # manifest.json + collected paths
+```
+
+Container mounts: `/logs/agent`, `/logs/verifier`, `/logs/artifacts`; `/tests` is copied in by the
+verifier **after** the agent runs; `/solution` only by the oracle agent.
+
+### Result schema (`harbor.models.trial.result`)
+
+- `TrialResult`: `task_name`, `trial_name`, `task_id`, `task_checksum`, `config`, `agent_info`,
+  `agent_result: AgentContext|None`, `verifier_result: VerifierResult|None`, `exception_info`,
+  `started_at`, `finished_at`, `environment_setup/agent_setup/agent_execution/verifier: TimingInfo`.
+- `VerifierResult` has **one** field: `rewards: dict[str, float|int] | None`. **There is no
+  `pass` field** — pass/fail is ours to define from the rewards dict (see ERP-Bench below).
+- `AgentContext` (what our agent must populate): `n_input_tokens` (incl. cache), `n_cache_tokens`,
+  `n_output_tokens`, `cost_usd`, `rollout_details`, `metadata`.
+- Reward source of truth in the container: `/logs/verifier/reward.json` (preferred) else
+  `reward.txt` (a bare float).
+
+### Custom agents
+
+Subclass `harbor.agents.base.BaseAgent` and implement:
+
+```python
+@staticmethod
+def name() -> str: ...
+def version(self) -> str | None: ...
+async def setup(self, environment: BaseEnvironment) -> None: ...
+async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None: ...
+def populate_context_post_run(self, context: AgentContext) -> None: ...   # optional
+```
+
+Constructor kwargs Harbor injects: `logs_dir` (= host `<trial>/agent/`), `model_name`, `logger`,
+plus `mcp_servers`, `skills_dir`, `load_trajectory` when configured, plus **anything passed with
+`--ak k=v`**. (`task_dir`/`trial_paths`/`agent_timeout_sec` are injected for the *oracle* only.)
+
+**The agent object runs on the HOST.** It drives the task container through the `environment`
+handle → this settles P0.5: `harness/container.py` implements **mode (b), host-side driver**.
+
+`BaseEnvironment` API we use:
+- `await environment.exec(command, cwd=None, env=None, timeout_sec=None, user=None) -> ExecResult`
+  with `ExecResult(stdout, stderr, return_code)`
+- `await environment.upload_file(source_path, target_path)` / `upload_dir(source_dir, target_dir)`
+- `await environment.download_file/-dir(...)`
+
+Signalling completion = returning from `run()`. There is no in-band "done" tool; our `finish`
+semantics are internal to our loop.
+
+`BaseInstalledAgent` (used by `pi`, `claude-code`, …) instead installs a CLI **inside** the
+container and shells out to it.
+
+---
+
+## ERP-Bench
+
+Source: https://github.com/agentic-labs/erp-bench (also the HF dataset `agentic-labs/erp-bench`,
+which returns 401 unauthenticated — the GitHub clone is the working copy). Cloned to
+`vendor/erp-bench` (221 MB). The dataset is the one used in the Anchor paper, *"Preventing Artifact
+Drift in Agent Benchmark Generation."*
+
+### Task layout
+
+```
+tasks/<task_id>/
+  task.toml                 # metadata + timeouts + resources
+  instruction.md            # the natural-language task given to the agent
+  environment/  Dockerfile entrypoint.sh odoo.conf scenario_data.json setup_scenario.py
+  tests/        test.sh checks.py                 # ← DENY-LISTED for eval100 tasks
+  solution/     solve.sh solver.py optimal_plan.json   # ← DENY-LISTED for eval100 tasks
+```
+
+**Guard deny paths:** `vendor/erp-bench/tasks/<eval-id>/tests/**` and
+`vendor/erp-bench/tasks/<eval-id>/solution/**`.
+
+All 300 `environment/Dockerfile`, `entrypoint.sh` and `odoo.conf` files are **byte-identical**
+(md5 checked); only `scenario_data.json` differs per task. So the image is the same everything
+across configs, and Docker layer caching makes per-task builds cheap after the first.
+
+### Metadata (`task.toml`)
+
+`[metadata]`: `scenario_number`, `name`, `difficulty` (easy/medium/hard), `category = "erp"`,
+`objective_kind`, **`task_pattern`** ← the stratification key, `tags`, `seed`.
+`[verifier] timeout_sec = 300`, `[agent] timeout_sec = 3600`,
+`[environment] build_timeout_sec = 600, cpus = 3, memory_mb = 4096, storage_mb = 2048,
+allow_internet = true`.
+
+Counts: **300 tasks / 29 patterns**. difficulty: 50 easy, 166 medium, 84 hard.
+`objective_kind`: min_new_spend 183, vendor_consolidation 34, capacity_preservation 31,
+constraint_only 24, repair_plan 28.
+
+Patterns and counts (29):
+
+```
+12  22_single_bom_split_by_capacity_invoicing        11  13_single_subassembly_qualified_workcenters
+12  21_single_bom_lowest_cost_screened_mixed_seeded  11  12_single_subassembly_lowest_cost
+12  20_manufacture_only_no_available_vendors         11  10_single_bom_split_by_capacity
+11  25_shared_component_subassemblies_branch_...     11  09_single_bom_lowest_cost
+11  24_single_subassembly_shared_overflow_...        11  08_single_bom_single_workcenter
+11  23_restricted_subassembly_qualified_...          11  07_screened_buy_only_mixed_seeded_invoicing
+11  19_manufacture_only_no_buy_route                 11  06_screened_buy_only_mixed_seeded
+11  18_manufacture_only_policy_forbidden             10  repair_plan_medium
+11  17_shared_component_subassemblies_branch_...     10  repair_plan_hard
+11  14_single_subassembly_shared_overflow_capacity   10  26_buy_only_net_30_no_adjacent_data
+                                                     10  16_serial_subassemblies_branch_assigned
+                                                     10  15_parallel_subassemblies_branch_assigned
+                                                     10  11_restricted_subassembly_qualified_workcenters
+                                                     10  05_screened_buy_only_all_seeded
+                                                      8  repair_plan_easy
+                                                      8  04_buy_only_percentage_downpayment
+                                                      8  03_buy_only_fixed_downpayment
+                                                      8  02_buy_only_immediate_invoicing
+                                                      8  01_buy_only_baseline
+```
+
+29 patterns × 3 = 87, so eval100 = 3 per pattern + 13 extra by round-robin (P1.1).
+
+### Dev task (never used for eval)
+
+**`2000_easy_01_buy_only_baseline`** — chosen 2026-08-31, before `configs/eval100.txt` exists.
+`select_eval100.py` must exclude it explicitly.
+
+### Reward semantics
+
+`tests/test.sh` writes `/logs/verifier/reward.json` **and** `reward.txt`, plus `checks.log`,
+`rule_results.tsv`, `optimality.json`, `spend.json`.
+
+`reward.json` top-level keys:
+
+```
+overall_score  float 0..1     ← the headline reward
+passed         bool           ← the benchmark's own pass flag  (pass@1 = mean of this)
+constraint     {earned, total}
+hygiene        {earned, total}
+optimality     {score, total}
+rules          {total, applicable, passed, failed, not_applicable,
+                by_dimension: {constraint:[{rule,args,expr,status,passed,applicable}], ...}}
+spend          {expected_spend, total_new_spend, spend_delta, spend_score, ...}
+optimality_detail {objective_kind, optimality_score, primary_actual, primary_expected, primary_score}
+```
+
+**Per-rule flags are exposed** (`rules.by_dimension`), which makes failure coding cheap in P1.4/P5.3
+without ever reading the rule *logic*. `reward.txt` holds the same scalar (`"0.00"`).
+
+Measured on dev task `2000_easy_01_buy_only_baseline`:
+- **nop** (untouched environment): `overall_score = 0.0`, `passed = false`,
+  constraint 0/27, hygiene 1/5, optimality 100/100, rules 4/32 applicable passed.
+- **oracle** (reference solution): `overall_score = 100.0`, `passed = true`,
+  constraint 31/31, hygiene 6/6, optimality 100/100, rules 37/37 applicable passed.
+
+**`overall_score` is on a 0–100 scale, not 0–1** (nop 0.0 → oracle 100.0). `reward.txt` carries the
+same number formatted to 2 dp. Note the *totals* differ between runs (constraint 27 vs 31, hygiene
+5 vs 6): rule applicability depends on the end state, so **never** compare `earned` counts across
+tasks or runs without their `total`. Use `overall_score` for reward and `passed` for pass@1.
+
+### Odoo / Postgres access inside the task container
+
+One container runs **both** Odoo 19 and PostgreSQL 18 (`pg_ctlcluster 18 main`).
+
+| Fact | Value |
+|---|---|
+| Odoo URL | `http://127.0.0.1:8069` |
+| Database | `bench` |
+| Admin login / password | `admin` / `pass` |
+| API key | contents of `/etc/odoo/api_key` (generated at boot, 90-day `rpc` key for admin) |
+| Odoo master password | `helloworld` (`admin_passwd` in `/etc/odoo/odoo.conf`) |
+| **dbfilter** | not set in `odoo.conf` → snapshot databases (P3.2) are reachable |
+| Postgres | `127.0.0.1:5432`, role `odoo` / password `odoo`, **SUPERUSER CREATEDB CREATEROLE** |
+| Setup-complete marker | `/tmp/saas_setup_complete` (poll this before the agent starts) |
+| Container user | `root` |
+| Python | 3.12.3, `pip3` present |
+| Present | `psycopg2`, `odoolib` (odoo-client-lib 2.0.0), `psql`, `curl` |
+| Absent | `pandas`, `jq` |
+| Outbound network | `allow_internet = true` in task.toml |
+
+The instruction tells the agent to use `odoolib` with `protocol="json2"`. Whether the legacy
+`/xmlrpc/2/object` endpoint still answers on Odoo 19 is recorded under *Odoo RPC* below —
+`harness/lib/erp.py` follows whatever actually works, not PLAN's assumption of `xmlrpc.client`.
+
+
+### Odoo RPC — measured
+
+Both transports answer on Odoo **19.0-20260817**:
+
+- **XML-RPC works**: `/xmlrpc/2/common` → `authenticate("bench", "admin", <api_key>, {})` → `uid = 2`;
+  `/xmlrpc/2/object` → `execute_kw(...)`. PLAN's stdlib `xmlrpc.client` design is viable, and it
+  keeps `harness/lib/erp.py` dependency-free. **Chosen transport.**
+- **JSON-2 works**: `odoolib.get_connection(protocol="json2", port=8069, database="bench",
+  login="admin", password=<api_key>)`. This is what `instruction.md` advertises, so pi (config A)
+  uses it. Endpoints look like `POST /json/2/<model>/<method>`.
+- Only `/xmlrpc/2/db` (database management) is deprecated — the entrypoint uses
+  `POST /web/database/create` instead.
+
+### Starting state of a task environment (dev task 2000)
+
+- **`sale.order` count = 0.** The customer demand exists only in `instruction.md`; the agent must
+  create *and confirm* the sales orders itself. `check.invariants` item 2 ("demand covered") must
+  therefore work from orders the agent created, not from pre-seeded ones.
+- 52 `product.product`, 113 `res.partner`. Finished product carries `default_code`
+  (e.g. `P674891CF17-SPP-001`) and on-hand stock.
+- Vendor capacity limits live in **`res.partner.comment` (Internal Notes)**; `product.supplierinfo`
+  has **no `max_qty` field** (stated in `instruction.md` and confirmed by the schema).
+- Idle container memory: **~330 MiB** (far below PLAN's 1.5 GB estimate); measure again under agent
+  load before fixing N.
+
+### Timing (warm image, dev task, this machine)
+
+environment_setup ≈ 2 s · oracle agent_execution ≈ 40 s · verifier ≈ 8 s → ~50 s per oracle trial.
+First build of the image ≈ 4 min; image is 3.42 GB and is rebuilt per task id (layer-cached).
+
+### Environment patches (uniform, all 300 tasks — `scripts/patch_tasks.py`)
+
+1. `uv pip install --system` → `uv pip install --system --break-system-packages`.
+   Current uv honours PEP 668 on the Debian-based `odoo:19` image, so **every** task environment
+   failed to build (`error: externally-managed-environment`). Applied identically to all 300 tasks.
+
+---
+
+## Discrepancies with PLAN.md
+
+1. **pi repo.** PLAN says clone `earendil-works/pi`. That repo exists (the upstream Pi agent
+   harness, TypeScript/npm), but Harbor's built-in `pi` agent and ERP-Bench's `agents/pi.py`
+   install **`agentic-labs/pi-mono`**. The leaderboard harness is the pi-mono build.
+2. **Odoo RPC.** PLAN specifies `xmlrpc.client` against `/xmlrpc/2/object`. ERP-Bench's own
+   instruction and entrypoint use `odoolib` with the **JSON-2** protocol and note that
+   `xmlrpc/2/db` is deprecated in Odoo 19.
+3. **Verifier/oracle live in the task dir**, not a separate grader service:
+   `tasks/<id>/tests/` and `tasks/<id>/solution/`.
+4. **Harbor has no `pass` field**; pass@1 must come from `reward.json.passed`.
+5. **Reward JSON is nested** and Harbor 0.22.0 requires flat `dict[str, float|int]`. Worked around
+   with `harness/verifier.py:FlatVerifier` (`--verifier harness.verifier:FlatVerifier`), which only
+   flattens the parsed dict — scoring is untouched.
+6. **Task environments do not build** with current uv (PEP 668); see *Environment patches*.
+7. **`--ak`/agent kwargs** are how config ids reach our agent; PLAN's "config loader" reads
+   `configs/configs.yaml` keyed by that id.
+
+---
+
+## pi
+
+The leaderboard harness. Harbor's built-in `pi` agent (`harbor.agents.installed`, `AgentName.PI`)
+is a `BaseInstalledAgent`: it installs Node 22 via nvm **inside the task container**, clones
+**`https://github.com/agentic-labs/pi-mono.git`** (`--depth 1`, `--branch <version>` when a version
+kwarg is given), `npm install && npm run build`, then `npm install -g ./packages/coding-agent`.
+Vendored at `vendor/pi-mono` (root package 0.0.3, `packages/coding-agent` **0.84.1**).
+
+Invocation (from `harbor/agents/installed/pi.py`, mirrored in `erp-bench/agents/pi.py`):
+
+```
+. ~/.nvm/nvm.sh; pi --print --mode json --no-session \
+   --provider <provider> --model <model> [--thinking <level>] '<instruction>' \
+   2>&1 </dev/null | stdbuf -oL tee /logs/agent/pi.txt
+```
+
+- **Tools (4 built-ins): `read`, `bash`, `edit`, `write`.** No planning, no todo, no finish tool.
+- **System prompt** — verbatim, from `packages/coding-agent/src/core/system-prompt.ts`
+  (`toolsList` is only populated for tools with a one-line snippet; `guidelines` is assembled from
+  the tool set, always ending with the last two bullets):
+
+```
+You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+
+Available tools:
+- read: ...
+- bash: ...
+- edit: ...
+- write: ...
+
+In addition to the tools above, you may have access to other custom tools depending on the project.
+
+Guidelines:
+- Use bash for file operations like ls, rg, find
+- Be concise in your responses
+- Show file paths clearly when working with files
+
+Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+- Main documentation: <readmePath>
+- Additional docs: <docsPath>
+- Examples: <examplesPath> (extensions, custom tools, SDK)
+- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
+- When asked about: extensions (docs/extensions.md), examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
+- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
+- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)
+
+Current working directory: /workspace
+```
+
+The instruction reaches the model as the **first user message** (the CLI positional arg). There is
+**no ERP/Odoo-specific text in pi's prompt** — the Odoo credentials and the `odoolib` snippet come
+from ERP-Bench's own `instruction.md`. That is exactly the "generic coding-agent harness" baseline.
+
+| Setting | Value |
+|---|---|
+| Step / turn cap | **none.** `--max-turns` does **not exist** in pi 0.84.1 (`packages/coding-agent/src/cli/args.ts`); the only bound is Harbor's `[agent] timeout_sec = 3600`. Harbor's `Pi` agent still advertises a `max_turns` CLI flag — passing it would make pi error on an unknown argument. **Do not pass `--ak max_turns=...`.** |
+| Temperature | **not set** → provider default (pi only sends `temperature` when explicitly configured) |
+| max_tokens | not set → provider default |
+| Bash output truncation | last **2000 lines** or **50 KB**, whichever first; full output written to a temp file whose path is shown |
+| Bash timeout | none by default (per-call `timeout` arg optional) |
+| Thinking | `--thinking off|minimal|low|medium|high|xhigh` (Harbor exposes it as `--ak thinking=...`) |
+| Output for accounting | `--mode json` NDJSON on stdout; Harbor sums `message_end` events' `usage.{input,output,cacheRead,cacheWrite}` and `usage.cost.total` into `AgentContext` |
+| Providers | anthropic, openai, google, openrouter, groq, fireworks, huggingface, mistral, xai, amazon-bedrock, github-copilot — selected by the `provider/` prefix of `-m` |
+
+**Reproducibility gap:** pi-mono has no release tags, and Harbor clones the default branch at HEAD,
+so config A drifts with upstream. Mitigation: record `pi --version` **and** the pi-mono commit SHA
+inside the container in `meta.json`, and run every config-A trial from one pinned commit (a thin
+`Pi` subclass that clones a fixed SHA) — see P1.2.
+
+## Models
+
+*(P0.4 — blocked on `MODEL_BIG_API_KEY` / `MODEL_SMALL_API_KEY` and base URLs)*
+
+## Minting
+
+*(P0.2 — `uv run generate-tasks --category procurement --dataset-config ... --output tasks`;
+seeded per task via `[metadata] seed`. To be verified.)*
+
+## Reproduction
+
+*(P1.3)*
+
+## Odoo wizards
+
+*(P2.3)*
+
+## Dev curve decisions
+
+*(Phase 3)*
+
+## Freeze
+
+*(P3.7)*
