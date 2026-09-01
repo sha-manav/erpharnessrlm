@@ -22,7 +22,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.4 lib/check.py + finish  | done   | 2026-09-01 | Appendix B 1/3/4/7 + finish gate (3 refusals); 12 live tests; found Odoo auto-adds vendors on PO confirm
 - P2.5 lib/plan.py            | done   | 2026-09-01 | ledger with bounded summary for reinjection; 9 unit tests
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
-- P2.7 tools.py + loop.py     | todo   |            |
+- P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
 - P2.8 agent.py (Harbor)      | todo   |            |
 - P2.9 v0 smoke + dev point   | todo   |            |
 
