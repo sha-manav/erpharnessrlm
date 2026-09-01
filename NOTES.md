@@ -533,7 +533,50 @@ are, by construction, not eval tasks.
 
 ## Reproduction
 
-*(P1.3)*
+### The published numbers and where they come from
+
+Not in the erp-bench repo and not on Harbor Hub (no ERP-Bench leaderboard exists there). The source
+is the **Anchor paper, arXiv:2605.26321, Appendix G.1, Table 12** — *"Anchor: Mitigating Artifact
+Drift in Agent Benchmark Generation"*.
+
+| Model | coding pass@1 | coding pass@5 | browser pass@1 | computer-use pass@1 |
+|---|---|---|---|---|
+| GPT-5.5 | **43.4** | 73.0 | 9.7 | 7.9 |
+| GLM-5.1 | **35.8** | 63.3 | 2.4 | — |
+| Claude Opus 4.7 | **30.8** | 60.7 | 28.8 | 23.7 |
+| Kimi K2.5 | **9.1** | 20.3 | 1.5 | — |
+
+Their setup, in their words: the "minimal, open-source **pi-mono** agent toolkit", coding harness =
+"shell and filesystem tools, driving Odoo through the **JSON-2 API**"; toolkit surface "read, write,
+edit, bash, grep, find, and ls"; each trial gets a **one-hour timeout**, a **400-turn budget**, and
+"provider-default reasoning effort where exposed"; **five trials per agent-task pair** over all 300
+tasks (1,500 trials per model-harness pair). A pass is "the agent's terminal state satisfies all
+applicable constraint checks and achieves the task objective".
+
+### How our config A differs, and why the ±8-point tolerance is the right test
+
+| | Anchor Table 12 | our config A |
+|---|---|---|
+| tasks | all 300 | frozen 100 (stratified over all 29 patterns) |
+| trials per task | 5 | 1 |
+| harness | pi-mono toolkit | pi 0.84.4 (`@earendil-works/pi-coding-agent`), same CLI and tools |
+| turn budget | 400 | none enforced (pi 0.84.4 has no `--max-turns`); bounded by the 1 h timeout |
+| timeout | 1 h | 1 h (`[agent] timeout_sec = 3600` in every task.toml) |
+| tools | "read, write, edit, bash, grep, find, ls" | pi's four defaults: read, bash, edit, write |
+
+pi 0.84 defines all seven (`allToolNames` in `packages/coding-agent/src/core/tools/index.ts`) but
+activates only four unless `--tools` is passed, and **ERP-Bench's own `agents/pi.py` does not pass
+`--tools`** — so the four-tool default is what their runs used too, and the paper's list describes
+the toolkit surface rather than the active set. For these tasks the difference is small: grep/find/ls
+are filesystem tools, and the work happens through Python scripts against the JSON-2 API.
+| temperature | provider default | provider default (pi sends none) |
+
+Sampling noise alone puts a 1-trial, 100-task estimate of a ~36% rate at about **±4.8 points (1 SE)**,
+so PLAN's ±8-point band is roughly ±1.7 SE — a real check, but it cannot resolve small harness
+differences. Two of the differences above (4 tools vs 7, no turn cap) are worth re-checking if the
+observed number lands outside the band before blaming the environment.
+
+*(P1.3 result to be filled after the config-A eval100 runs.)*
 
 ## Odoo wizards
 
