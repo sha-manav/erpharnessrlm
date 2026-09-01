@@ -576,6 +576,28 @@ so PLAN's ±8-point band is roughly ±1.7 SE — a real check, but it cannot res
 differences. Two of the differences above (4 tools vs 7, no turn cap) are worth re-checking if the
 observed number lands outside the band before blaming the environment.
 
+### Attempt 1 (2026-09-01) — invalid, out of credit
+
+`runs/INVALID__A_pi__big__eval100__20260901T063446Z`. The OpenRouter account held $10 and was
+exhausted about a quarter of the way in. **66 of 100 trials returned HTTP 402 before their first
+model call**; 76 recorded exactly one step and $0 of spend. The aggregate read pass@1 3.8%,
+mean reward 4.6 — entirely a billing artefact.
+
+Two lessons, both now enforced in code:
+
+1. **A funding failure looks like a bad model.** Trials complete "successfully" with
+   `terminal_reason: finish` because pi exits cleanly after its retries are refused. Nothing in
+   Harbor's result signals the outage. `scripts/run.py` now runs a balance preflight and refuses
+   to launch; `aggregate.py` skips any run whose `meta.json` sets `invalid`.
+2. **OpenRouter reserves credit against the requested `max_tokens`, not the tokens used.** pi asks
+   for ~180k tokens per call, so requests are refused while the nominal balance is still positive
+   (the error text: "You requested up to 179869 tokens, but can only afford 130715"). The preflight
+   therefore demands the estimate plus $5 of floor.
+
+Measured cost per config-A trial: **$0.23** on the five easiest dev tasks, **~$0.33** across the
+eval100 mix before the money ran out. `est_cost_per_trial_usd` in `configs/models.yaml` is set
+from these.
+
 *(P1.3 result to be filled after the config-A eval100 runs.)*
 
 ## Odoo wizards

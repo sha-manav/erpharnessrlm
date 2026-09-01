@@ -11,7 +11,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 
 ## Phase 1 — Reproduction and failure analysis
 - P1.1 Select eval100 and dev | done   | 2026-08-31 | eval100 frozen: 100 ids, 29 patterns, 3-4 each; dev 200 / dev40 / dev10 / dev5; guard armed; tag eval100-frozen
-- P1.2 Config A on eval100    | next   |            | pin --ak version=0.84.4; needs scripts/run.py
+- P1.2 Config A on eval100    | blocked| 2026-09-01 | first attempt INVALID (OpenRouter ran out of credit mid-run, 66/100 trials got HTTP 402); needs account funded, then rerun both models
 - P1.3 Ingest + leaderboard   | todo   |            |
 - P1.4 Stock failure analysis | todo   |            |
 
