@@ -78,6 +78,51 @@ def openrouter_balance(api_key: str) -> float | None:
     return float(total) - float(used)
 
 
+def preflight_model(model: dict, api_key: str) -> dict:
+    """Send one tiny request and confirm the model actually answers for this account.
+
+    Learned the hard way twice over. A run whose every trial dies on its first model call
+    still takes an hour of machine time and still writes 100 plausible-looking results:
+    the config-A small-model run returned pass@1 0.0 because an account-level provider
+    restriction left `qwen/qwen3-32b` with no allowed endpoint
+    ("No endpoints available matching your guardrail restrictions", HTTP 404). Five
+    seconds here would have caught it.
+
+    Returns the serving provider so meta.json records which upstream a run actually used.
+    """
+    import urllib.error
+    import urllib.request
+
+    payload = {
+        "model": model["model"],
+        "max_tokens": 4,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    request = urllib.request.Request(
+        f"{model['base_url'].rstrip('/')}/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            body = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        raise SystemExit(
+            f"refusing to start: {model['model']} is not answering for this account "
+            f"(HTTP {exc.code}): {detail}"
+        ) from None
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise SystemExit(f"refusing to start: cannot reach {model['base_url']}: {exc}") from None
+
+    if body.get("error"):
+        raise SystemExit(f"refusing to start: {model['model']} returned {body['error']}")
+    provider = body.get("provider")
+    print(f"model check: {model['model']} answered via {provider or 'unknown provider'}")
+    return {"reachable": True, "provider": provider}
+
+
 def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool) -> dict:
     """Refuse to start a run the account cannot pay for.
 
@@ -225,6 +270,7 @@ def main() -> int:
             f"~${models['small'].get('est_cost_per_trial_usd', 0):.2f} on small). "
             "Only dev40 needs the big model."
         )
+    reachability = preflight_model(model, api_key)
     credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -254,6 +300,7 @@ def main() -> int:
         .stdout.decode().strip(),
         "command": " ".join(shlex.quote(part) for part in cmd),
         "credit_preflight": credit,
+        "model_preflight": reachability,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
         "terminal_reasons": {},

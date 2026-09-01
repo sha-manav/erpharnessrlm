@@ -70,6 +70,13 @@ class OdooError(RuntimeError):
         super().__init__(f"{model}.{method}: {text}" if model else text)
 
 
+def _is_unserializable_reply(fault_text: str) -> bool:
+    """True when the fault came from writing the response, not from running the method."""
+    return "cannot marshal None" in fault_text and (
+        "dumps" in fault_text or "dump_nil" in fault_text or "Marshaller" in fault_text
+    )
+
+
 def _name_of(value: Any) -> str:
     """`[7, 'Axis Assemblies']` -> `'Axis Assemblies'`; False -> ''."""
     if isinstance(value, (list, tuple)) and len(value) == 2:
@@ -139,7 +146,21 @@ class Erp:
                 self.db, self.uid, self.password, model, method, list(args), kwargs
             )
         except xmlrpc.client.Fault as fault:
-            raise OdooError(fault.faultString, model, method) from None
+            if _is_unserializable_reply(fault.faultString):
+                # Odoo 19's XML-RPC endpoint marshals responses with allow_none=False, so
+                # ANY method whose return value is or contains None fails *after* the ORM
+                # call has run and committed — button_cancel, action_post, create_invoices
+                # and friends. The traceback points at the response writer
+                # (OdooMarshaller.dumps -> dump_nil), never at the ORM, which is how this
+                # is told apart from a real failure. Verified against the live image: the
+                # effect is present afterwards.
+                #
+                # Every write helper here confirms its own effect (receive re-reads the
+                # pickings, invoice diffs invoice_ids, produce checks the MO state), so a
+                # genuinely failed call is still caught by the caller.
+                result = None
+            else:
+                raise OdooError(fault.faultString, model, method) from None
         except Exception as exc:  # noqa: BLE001 - transport errors read the same way
             raise OdooError(str(exc), model, method) from None
         if method not in ("read", "search", "search_read", "search_count", "fields_get"):
@@ -537,8 +558,8 @@ class Erp:
         wizard_id = self.call(
             "sale.advance.payment.inv", "create", [{"advance_payment_method": "delivered"}],
             {"context": context})
-        self._call_tolerating_unserializable_reply(
-            "sale.advance.payment.inv", "create_invoices", [[wizard_id]], {"context": context})
+        self.call("sale.advance.payment.inv", "create_invoices", [[wizard_id]],
+                  {"context": context})
         created = sorted(set(self._so_invoice_ids(so_id)) - before)
         if not created:
             raise OdooError(
@@ -546,23 +567,6 @@ class Erp:
                 "and something has been delivered",
                 "sale.advance.payment.inv", "create_invoices")
         return created
-
-    def _call_tolerating_unserializable_reply(self, model: str, method: str,
-                                              args: Sequence, kwargs: dict | None = None):
-        """Run a call whose *reply* Odoo cannot marshal, and swallow only that failure.
-
-        `sale.advance.payment.inv.create_invoices` returns a UI action containing nulls,
-        and Odoo's XML-RPC layer raises "cannot marshal None unless allow_none is enabled"
-        while writing the response — after the transaction has committed. Verified on the
-        live image: the invoice exists afterwards. Every caller of this helper checks the
-        effect itself, so a genuine failure is still caught.
-        """
-        try:
-            return self.call(model, method, args, kwargs)
-        except OdooError as exc:
-            if "cannot marshal None" not in str(exc):
-                raise
-            return None
 
     def _so_invoice_ids(self, so_id: int) -> list[int]:
         rows = self.call("sale.order", "read", [[so_id]], {"fields": ["invoice_ids"]})
