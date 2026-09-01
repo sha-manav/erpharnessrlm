@@ -30,6 +30,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from harness.rewards import failed_rule_names  # noqa: E402
 from scripts.discover import read_task_meta  # noqa: E402
 
 TAXONOMY = {
@@ -47,16 +48,6 @@ TAXONOMY = {
     "SCOPE": "modified unrelated records",
     "OTHER": "",
 }
-
-
-def failed_rules(verifier_raw: dict, limit: int = 25) -> list[str]:
-    by_dimension = ((verifier_raw.get("rules") or {}).get("by_dimension")) or {}
-    out: list[str] = []
-    for dimension, rules in by_dimension.items():
-        for rule in rules if isinstance(rules, list) else []:
-            if rule.get("status") == "FAIL" or rule.get("passed") is False:
-                out.append(f"{dimension}: {rule.get('expr') or rule.get('rule')}")
-    return out[:limit]
 
 
 def condense(trajectory: Path, head: int, tail: int, width: int) -> list[str]:
@@ -158,7 +149,7 @@ def write_report(
             "Failed rules:",
             "",
         ]
-        rules = failed_rules(raw)
+        rules = failed_rule_names(raw, limit=25)
         lines += [f"- `{rule}`" for rule in rules] or ["- (none reported)"]
         lines += ["", "Trajectory:", "", "```"]
         trajectory = trial_dir / "trajectory.jsonl"

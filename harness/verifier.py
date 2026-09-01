@@ -20,30 +20,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from harbor.verifier.verifier import Verifier, RewardFileEmptyError, VerifierOutputParseError
+from harbor.verifier.verifier import (
+    Verifier,
+    RewardFileEmptyError,
+    VerifierOutputParseError,
+)
 
-# Keys inside nested reward blocks that are not scalars worth flattening.
-_SKIP_SUBKEYS = frozenset({"by_dimension", "rules_detail"})
-
-
-def flatten_rewards(raw: Any, prefix: str = "") -> dict[str, float | int]:
-    """Flatten one level of nested reward blocks into scalar ``key_subkey`` entries.
-
-    Non-numeric values (None, strings, lists) are dropped: Harbor only accepts
-    numbers, and the untouched ``reward.json`` remains the source of truth.
-    """
-    flat: dict[str, float | int] = {}
-    if not isinstance(raw, dict):
-        return flat
-    for key, value in raw.items():
-        name = f"{prefix}{key}"
-        if isinstance(value, bool):
-            flat[name] = int(value)
-        elif isinstance(value, (int, float)):
-            flat[name] = value
-        elif isinstance(value, dict) and key not in _SKIP_SUBKEYS:
-            flat.update(flatten_rewards(value, prefix=f"{name}_"))
-    return flat
+# The flattening itself lives in a Harbor-free module so the analysis scripts and the
+# unit tests (which run outside Harbor's virtualenv) share exactly one definition.
+from harness.rewards import flatten_rewards
 
 
 class FlatVerifier(Verifier):
