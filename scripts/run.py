@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EVAL_SETS = {"eval100"}
+EVAL_SETS = {"eval100", "eval100_remaining"}
 
 # Sets used purely for iteration while building the harness. A trial costs ~$0.73 on the
 # big model and ~$0.10 on the small one, and nothing from these sets goes into the
@@ -176,6 +176,15 @@ def main() -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--model", required=True, choices=["big", "small"])
     parser.add_argument("--set", required=True, help="a name under configs/, e.g. dev5 or eval100")
+    parser.add_argument(
+        "--alias",
+        help=(
+            "label this run under a different set name in the run directory. Used to run a "
+            "frozen set in disjoint batches (e.g. --set eval100_remaining --alias eval100) so "
+            "the batches aggregate as one set. Only legitimate when the batches are disjoint "
+            "and were not selected on outcome; meta.json records both names."
+        ),
+    )
     parser.add_argument("-n", "--n-concurrent", type=int, default=int(os.environ.get("ERP_N", "4")))
     parser.add_argument("--tasks-dir", default=str(REPO_ROOT / "vendor/erp-bench/tasks"))
     parser.add_argument("--background", action="store_true", help="detach and return immediately")
@@ -219,7 +228,7 @@ def main() -> int:
     credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{args.config}__{args.model}__{args.set}__{stamp}"
+    run_id = f"{args.config}__{args.model}__{args.alias or args.set}__{stamp}"
     run_dir = REPO_ROOT / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -234,6 +243,7 @@ def main() -> int:
         "model_key": args.model,
         "model": {k: v for k, v in model.items() if "key" not in k},
         "set": args.set,
+        "set_alias": args.alias,
         "n_tasks": len(task_ids),
         "n_concurrent": args.n_concurrent,
         "commit": git("rev-parse", "HEAD"),
