@@ -238,7 +238,8 @@ One container runs **both** Odoo 19 and PostgreSQL 18 (`pg_ctlcluster 18 main`).
 | Python | 3.12.3, `pip3` present |
 | Present | `psycopg2`, `odoolib` (odoo-client-lib 2.0.0), `psql`, `curl` |
 | Absent | `pandas`, `jq` |
-| Outbound network | `allow_internet = true` in task.toml |
+| Outbound network | `allow_internet = true`; **`pip3 install --break-system-packages <pkg>` works** (ortools installed in 5.7 s), so P1.4's optional solver dependency needs no vendoring. PEP 668 applies here too. |
+| Absent (relevant) | `git`, `jq`, `pandas`, `ortools`, `pulp` |
 
 The instruction tells the agent to use `odoolib` with `protocol="json2"`. Whether the legacy
 `/xmlrpc/2/object` endpoint still answers on Odoo 19 is recorded under *Odoo RPC* below —
@@ -378,8 +379,33 @@ inside the container in `meta.json`, and run every config-A trial from one pinne
 
 ## Minting
 
-*(P0.2 — `uv run generate-tasks --category procurement --dataset-config ... --output tasks`;
-seeded per task via `[metadata] seed`. To be verified.)*
+**Verified working.** The Anchor generator ships in the repo and mints fresh instances in
+milliseconds (CP-SAT solve ≈ 0.01 s per scenario).
+
+```bash
+cd vendor/erp-bench && uv sync            # ortools, pydantic, jinja2, numpy
+uv run generate-tasks --category procurement \
+  --difficulty easy --count N --seed 1 --start-number 9000 \
+  --output ../../data/minted --force
+# other flags: --pattern, --difficulty-mix, --dataset-config, --list-topology-combinations,
+#              --print-difficulty-presets, --num-search-workers, --metrics-output
+```
+
+Round-tripped end to end: `harbor run -p data/minted/9000_easy -a oracle` →
+`overall_score = 100.0`, `passed = true`, constraint 22/22, 54 s total.
+
+Two caveats that change how PLAN.md's P1.1 should use them:
+
+1. **Minted `task.toml` has no `task_pattern`** (and uses `version = "1.0"` instead of
+   `schema_version = "1.1"`). Stratifying a dev set by pattern therefore needs either the
+   `--pattern` flag at mint time (one mint run per pattern) or the shipped tasks.
+2. Minted environments need the same PEP 668 patch: run
+   `python3 scripts/patch_tasks.py --tasks-dir data/minted` after every mint.
+
+**Decision:** build `dev40/dev10/dev5` from the 200 shipped non-eval tasks (they carry
+`task_pattern`, so the dev curve is stratified the same way eval100 is). Keep minting for extra
+capacity when a specific pattern needs more dev instances than dev.txt provides — those instances
+are, by construction, not eval tasks.
 
 ## Reproduction
 

@@ -3,11 +3,11 @@
 One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`, `blocked`.
 
 ## Phase 0 — Discovery
-- P0.1 Harbor                 | doing  | 2026-08-31 | harbor 0.22.0 installed via uv; CLI flags + custom-agent interface recorded in NOTES
-- P0.2 ERP-Bench dataset      | doing  | 2026-08-31 | repo cloned; 300 tasks, 29 patterns; env Dockerfile patched (PEP 668); container up
-- P0.3 pi harness             | todo   |            |
+- P0.1 Harbor                 | done   | 2026-08-31 | harbor 0.22.0; CLI flags, custom-agent interface, result schema in NOTES; nop run on dev task parses
+- P0.2 ERP-Bench dataset      | done   | 2026-08-31 | 300 tasks/29 patterns; dev task 2000_easy_01_buy_only_baseline; nop=0 oracle=100; Odoo XML-RPC+JSON2 and PG SELECT verified; minting verified
+- P0.3 pi harness             | doing  | 2026-08-31 | pi-mono 0.84.1 read: 4 tools, system prompt, no turn cap, temp unset. Run on dev task pending API key
 - P0.4 Model endpoints        | blocked| 2026-08-31 | needs MODEL_BIG_API_KEY / MODEL_SMALL_API_KEY from user
-- P0.5 Container abstraction  | todo   |            |
+- P0.5 Container abstraction  | done   | 2026-08-31 | host-side driver; DockerContainer round-trip verified on erpdev; HarborContainer bridges in P2.8
 
 ## Phase 1 — Reproduction and failure analysis
 - P1.1 Select eval100 and dev | todo   |            |
