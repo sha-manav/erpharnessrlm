@@ -548,3 +548,26 @@ def test_reasoning_budget_from_the_model_spec_is_sent():
     assert client._payload([{"role": "user", "content": "hi"}], None)["reasoning"] == {"max_tokens": 6000}
     plain = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "k")
     assert "reasoning" not in plain._payload([{"role": "user", "content": "hi"}], None)
+
+
+def test_time_budget_warnings_fire_once_each(tmp_path, monkeypatch):
+    """At 70% of the budget the model is told to execute now; at 88% to finish now."""
+    import harness.loop as loop_module
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(loop_module.time, "time", lambda: clock["t"])
+    replies = [FakeReply("python", {"code": f"print({i})"}) for i in range(5)] + [FakeReply("finish", {"summary": "d"})]
+    loop, _, traj = build(tmp_path, replies, time_budget_s=100,
+                          run_tool=lambda name, args: FINISH_SENTINEL if name == "finish" else "ok")
+    original = loop.llm.complete
+
+    def advancing(messages, tools):
+        clock["t"] += 20          # each step costs 20 s of a 100 s budget
+        return original(messages, tools)
+    loop.llm.complete = advancing
+    result = loop.run()
+    user_msgs = [m["content"] for m in loop.messages if m["role"] == "user"]
+    warns = [m for m in user_msgs if m.startswith("[time]")]
+    assert len(warns) == 2 and "Execute the best" in warns[0] and "call finish" in warns[1]
+    assert "Time budget: 2 minutes" in user_msgs[0]
+    assert result.terminal_reason == "finish"

@@ -114,6 +114,7 @@ class Loop:
         ledger_summary: Callable[[], str] | None = None,
         briefing: str = "",
         logger=None,
+        time_budget_s: float = 0,
     ):
         self.llm = llm
         self.tools = tools
@@ -125,11 +126,24 @@ class Loop:
         self.ledger_summary = ledger_summary
         self.logger = logger
         self.pages = PageStore()
+        # Wall-clock awareness. The benchmark kills an episode at the task's agent
+        # timeout (3600 s on every task); the stock harness never hits it (13-step
+        # episodes) while this one rehearses and reasons at length, and a dev40 trial was
+        # cut off at step 40 with a five-plan comparison done and nothing executed. The
+        # model is told the budget up front, sees elapsed time in every status line, and
+        # is told once at 70% to execute now and once at 88% to finish now.
+        self.time_budget_s = float(time_budget_s or 0)
+        self.started = time.time()
+        self._time_warned: set[str] = set()
 
         first_user = instruction
         if briefing:
             first_user = f"{instruction}\n\n## Environment at task start\n\n{briefing}"
         first_user += f"\n\nStep cap: {step_cap}."
+        if self.time_budget_s:
+            first_user += (f" Time budget: {self.time_budget_s / 60:.0f} minutes of wall-clock — "
+                           "the episode is cut off after it, so a plan that is not executed on "
+                           "the main database by then scores nothing.")
 
         # Plain content: breakpoints are placed per request by llm.apply_cache_control,
         # which must move to the end of the transcript each turn to cache the growing prefix.
@@ -153,9 +167,33 @@ class Loop:
         function = call.get("function") or {}
         return (function.get("name"), function.get("arguments"))
 
+    def _elapsed(self) -> float:
+        return time.time() - self.started
+
+    def _time_check(self) -> None:
+        """Two warnings, each once: at 70% of the budget, and at 88%."""
+        if not self.time_budget_s:
+            return
+        frac = self._elapsed() / self.time_budget_s
+        left = max(0.0, self.time_budget_s - self._elapsed()) / 60
+        if frac >= 0.88 and "final" not in self._time_warned:
+            self._time_warned.update({"final", "warn"})
+            self._append_user(
+                f"[time] about {left:.0f} minutes remain before the episode is cut off. "
+                "Do not start anything new: make sure what is on the main database is "
+                "confirmed and consistent, then call finish with a summary.", "time_final")
+        elif frac >= 0.70 and "warn" not in self._time_warned:
+            self._time_warned.add("warn")
+            self._append_user(
+                f"[time] {self._elapsed() / 60:.0f} of {self.time_budget_s / 60:.0f} minutes used; "
+                f"about {left:.0f} remain. Stop comparing alternatives. Execute the best "
+                "feasible plan you have on the main database now (rehearse once at most), "
+                "then call finish.", "time_warning")
+
     # -- main loop ------------------------------------------------------------
     def run(self) -> LoopResult:
         self.step = 0
+        self.started = time.time()
         recent: list[tuple] = []
         summary = ""
 
@@ -164,6 +202,7 @@ class Loop:
                 return self._done("step_cap", summary)
             if self.llm.total.input >= self.token_cap:
                 return self._done("token_cap", summary)
+            self._time_check()
 
             self.step += 1
             try:
@@ -259,8 +298,10 @@ class Loop:
                     ledger = self.ledger_summary()
                 except Exception as exc:  # noqa: BLE001
                     ledger = f"(ledger unavailable: {exc})"
+                clock = (f" · {self._elapsed() / 60:.0f}/{self.time_budget_s / 60:.0f} min"
+                         if self.time_budget_s else "")
                 self._append_user(
-                    f"[status] step {self.step}/{self.step_cap} · {ledger}", "ledger")
+                    f"[status] step {self.step}/{self.step_cap}{clock} · {ledger}", "ledger")
 
     def _done(self, reason: str, summary: str) -> LoopResult:
         if self.logger:
