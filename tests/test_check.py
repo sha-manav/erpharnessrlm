@@ -65,7 +65,17 @@ def evidence_of(table, check_id: str) -> str:
 
 # -- clean state --------------------------------------------------------------
 def test_untouched_environment_passes_every_invariant(erp):
+    """The clean-state case: every invariant must pass before anything is touched.
+
+    This one genuinely needs a pristine scenario, and `tests/test_erp.py` mutates the same
+    container, so a full-suite run in the wrong order leaves real orders behind. Skip
+    rather than fail: an order left by a sibling test is not a defect in the invariants.
+    """
     from lib import check
+
+    touched = erp.count("purchase.order") + erp.count("sale.order") + erp.count("mrp.production")
+    if touched:
+        pytest.skip(f"container already has {touched} order(s); run `make devbox` for a clean one")
 
     table = check.invariants(erp)
     failed = [r for r in table.all() if r["status"] == "FAIL"]
@@ -265,7 +275,10 @@ def test_finish_refuses_while_a_hard_check_fails_then_relents(erp, tmp_path):
 
 
 def test_finish_passes_straight_through_when_checks_are_clean(erp, tmp_path):
-    from lib import finish as finish_module
+    from lib import check, finish as finish_module
+
+    if [r for r in check.invariants(erp).all() if r["status"] == "FAIL"]:
+        pytest.skip("container is not in a clean state; run `make devbox` for a fresh one")
 
     finish_module.SUMMARY_PATH = str(tmp_path / "summary.md")
     result = finish_module.finish("all good", client=erp)
