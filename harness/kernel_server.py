@@ -72,6 +72,10 @@ class Namespace:
                 try:
                     module = __import__(f"lib.{module_name}", fromlist=[module_name])
                     self.globals[module_name] = module
+                    # `import check` / `from finish import ...` in agent code must resolve
+                    # to the same objects: the docs say not to import, models import anyway
+                    # (a make6 trial lost its first step to ModuleNotFoundError: 'check').
+                    sys.modules.setdefault(module_name, module)
                     missing = []
                     for symbol in getattr(module, "EXPORTS", []):
                         if hasattr(module, symbol):

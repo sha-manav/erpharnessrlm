@@ -8,6 +8,8 @@ function that does not exist.
 
 A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 
+Bound in your kernel: `erp`, `Erp`, `OdooError`.
+
 **class `OdooError`** — An Odoo-side failure, carrying Odoo's own message rather than our traceback.
 
 **class `Erp`** — One authenticated connection to one database.
@@ -51,6 +53,8 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 
 End-state invariants, from ERP practice — never from benchmark grader code.
 
+Bound in your kernel: `Check`, `Rule` (and the module itself as `check`).
+
 **class `Check`**
 
 **class `Rule`** — A task-specific rule the agent writes from the instruction.
@@ -67,6 +71,8 @@ End-state invariants, from ERP practice — never from benchmark grader code.
 
 A task ledger the agent maintains and the loop re-injects (PLAN.md P2.5).
 
+Bound in your kernel: `plan`, `Plan`.
+
 **class `Plan`** — An ordered list of steps with a status each. Ids are 1-based and stable.
 - `set(texts)` — Replace the whole plan. Use once, at the start.
 - `add(text)` — Append one step and return its id.
@@ -81,37 +87,27 @@ A task ledger the agent maintains and the loop re-injects (PLAN.md P2.5).
 
 The finish tool, and the gate in front of it (PLAN.md P2.4).
 
-- `reset()` — Start a fresh episode (used by tests and by the agent at task start).
-- `set_baseline(failing_ids)` — Record checks that were already failing before the agent acted.
-- `record_baseline(client=None)` — Run the invariants now and remember which already fail. Called at task start.
-- `refusals()`
+Bound in your kernel: `finish`, `FINISH_SENTINEL`.
+
 - `finish(summary='', client=None, gate=True)` — End the episode, if the hard checks agree.
 
 ## `db`
 
 Read-only SQL against the task's Odoo database (PLAN.md P3.1).
 
-**class `SqlRefused`** — A statement that is not a read.
-
-**class `Db`**
-- `sql(query, limit=DEFAULT_LIMIT)` — Run a read-only query and return a `Table`.
-- `tables(like=None)` — What tables exist — the SQL counterpart to `erp.fields`.
-- `columns(table)`
+Bound in your kernel: `db`.
 
 ## `state`
 
 Database snapshots and the dry-run protocol (PLAN.md P3.2).
 
-**class `State`**
-- `snapshot(name)` — Clone the working database under `name`, replacing any existing clone.
-- `drop(name)`
-- `list()`
-- `diff(a='start', b=None)` — What changed between two databases, per model.
-- `rehearse(plan_fn, name='rehearsal')` — Run `plan_fn(client)` on a throwaway clone and return `check.all()` for it.
+Bound in your kernel: `state`.
 
 ## `fmt`
 
 Tables and paging — the layer that keeps context from exploding (PLAN.md P2.2).
+
+Bound in your kernel: `Table`, `PageStore`, `pages`, `show`, `paginate` (and the module itself as `fmt`).
 
 **class `Table`** — A list of dicts that prints as a fixed-width table and stays small.
 - `all()` — Every row, unabridged.
@@ -135,4 +131,4 @@ Tables and paging — the layer that keeps context from exploding (PLAN.md P2.2)
 
 The environment briefing rendered into the first user message (PLAN.md P3.3).
 
-- `render(client=None, char_budget=CHAR_BUDGET)` — Return the briefing text. Never raises: a section that fails says so and moves on.
+Bound in your kernel: `brief`.

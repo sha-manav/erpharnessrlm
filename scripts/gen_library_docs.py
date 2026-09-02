@@ -60,15 +60,38 @@ def signature(node: ast.FunctionDef) -> str:
     return f"{node.name}({', '.join(args)})"
 
 
+def exports_of(tree: ast.Module) -> list[str] | None:
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "EXPORTS" for t in node.targets):
+            try:
+                return list(ast.literal_eval(node.value))
+            except (ValueError, SyntaxError):
+                return None
+    return None
+
+
 def render_module(path: Path) -> list[str]:
     tree = ast.parse(path.read_text())
     name = path.stem
+    exports = exports_of(tree)
     lines = [f"## `{name}`", ""]
     summary = first_line(tree)
     if summary:
         lines += [summary, ""]
+    # What the kernel binds: the module under its own name unless an export shadows it
+    # (`finish` is the function, `erp`/`state`/`db`/`plan` are instances). Only bound names
+    # are documented; a helper that is not bound must not be offered as `module.helper`.
+    shadowed = bool(exports) and name in exports
+    if exports:
+        lines += [f"Bound in your kernel: {', '.join(f'`{e}`' for e in exports)}"
+                  + ("" if shadowed else f" (and the module itself as `{name}`)") + ".", ""]
 
     for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and shadowed and node.name not in exports:
+            continue
+        if isinstance(node, ast.ClassDef) and shadowed and node.name not in exports:
+            continue
         if isinstance(node, ast.ClassDef) and not node.name.startswith(SKIP_PREFIX):
             doc = first_line(node)
             lines.append(f"**class `{node.name}`** — {doc}" if doc else f"**class `{node.name}`**")

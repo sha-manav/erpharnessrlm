@@ -39,9 +39,9 @@ RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 # Retrying the terminal one is what produced a run of 100 silent zero-step trials earlier,
 # so the two are told apart by message rather than by status code.
 TRANSIENT_402 = "in-flight"
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 8
 BACKOFF_BASE = 2.0
-BACKOFF_CAP = 60.0
+BACKOFF_CAP = 90.0    # 8 attempts ≈ 5 min of waiting: a provider blip, not a request, is the unit of failure
 
 
 class LLMError(RuntimeError):
