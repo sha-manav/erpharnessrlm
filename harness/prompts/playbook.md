@@ -21,6 +21,10 @@ po = erp.create_po(vendor_id, [(product_id, qty)],
 erp.confirm_po(po)                                       # leave it confirmed; no receive()
 ```
 
+**One purchase order per supplier offer.** A second need from a vendor who already has
+an open order for that product goes onto that order — `erp.add_po_lines(po_id, [(product_id,
+qty)])` works on a confirmed PO — never onto a second PO; `create_po` refuses one.
+
 `origin` is the audit trail — *this purchase is for that order*. Name **only** the orders
 this purchase feeds: exact references (`S00004`, or `S00003, S00004`), and only those
 whose due date the arrival meets. An order due before the goods land is not fed by this
@@ -69,7 +73,12 @@ finishes the order having consumed nothing.
 **Sales.** Confirm, and set `commitment_date`. Deliver **only what is on hand now** —
 a delivery draws from stock, and stock that is still on a purchase order is not on hand.
 Invoice what you delivered and post it; an order delivered but not invoiced, or invoiced
-but left in draft, is unfinished work. Orders waiting on incoming goods stay confirmed
+but left in draft, is unfinished work. **When the task states an invoicing policy** —
+"after confirming each retained order, create and post exactly one linked invoice", a
+down payment, named payment terms — that policy applies to **every** retained order,
+delivered or not: `erp.invoice(so_id, payment_term="Immediate Payment")` (the wizard
+invoices ordered quantities under an order-based invoice policy). Write the policy into
+`plan.set` as a rule; the soft `so_invoiced` check lists what is still uninvoiced. Orders waiting on incoming goods stay confirmed
 with their delivery pending.
 
 ```python

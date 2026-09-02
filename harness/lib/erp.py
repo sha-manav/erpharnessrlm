@@ -860,6 +860,7 @@ class Erp:
                         "purchase.order", "create_po")
             if origin:
                 self._check_origin_feeds(vendor_id, lines, date_planned, origin)
+            self._check_one_po_per_offer(vendor_id, lines)
         commands = []
         for line in lines:
             product_id, qty = line[0], line[1]
@@ -877,6 +878,61 @@ class Erp:
         if origin:
             order["origin"] = origin
         return self.call("purchase.order", "create", [order])
+
+    def _check_one_po_per_offer(self, vendor_id: int, lines: Sequence[tuple]) -> None:
+        """Refuse a second open PO for a vendor/product that already has one.
+
+        One consolidated PO per supplier offer is a stated rule on every purchasing task,
+        and a repair trial lost on it alone: it kept a vendor's 12-unit PO and opened a
+        second 4-unit PO with the same vendor for the same product. The fix is to add the
+        line to the existing order (`add_po_lines`), which Odoo allows on a confirmed PO.
+        """
+        products = [line[0] for line in lines]
+        existing = self.search_read(
+            "purchase.order.line",
+            [("partner_id", "=", vendor_id), ("product_id", "in", products),
+             ("order_id.state", "in", ("purchase", "done"))],
+            ["order_id", "product_id", "product_qty"], limit=50)
+        if not existing:
+            return
+        by_po: dict[str, list[str]] = {}
+        for line in existing:
+            by_po.setdefault(line["order_id"][1], []).append(
+                f"{line['product_id'][1]} ×{line['product_qty']:g}")
+        first_po_id = existing[0]["order_id"][0]
+        shown = "; ".join(f"{po} already buys {', '.join(items)}" for po, items in by_po.items())
+        raise OdooError(
+            f"one PO per supplier offer: {shown} from this vendor. Add to it instead — "
+            f"erp.add_po_lines({first_po_id}, {[(l[0], l[1]) for l in lines]!r}) — or cancel it "
+            "and create one order for the full quantity. force=True writes a second PO anyway, "
+            "and the finish check will refuse it.",
+            "purchase.order", "create_po")
+
+    def add_po_lines(self, po_id: int, lines: Sequence[tuple]) -> list[int]:
+        """Add lines to an existing purchase order (draft or confirmed).
+
+        `lines` = [(product_id, qty[, price_unit[, date_planned]])], priced from the
+        vendor's tier when omitted, like `create_po`. Odoo accepts new lines on a confirmed
+        order and creates their receipt moves; this is how a second need from the same
+        vendor is met without a second PO.
+        """
+        order = self.get("purchase.order", [po_id], ["partner_id", "state", "date_planned"])[0]
+        if order["state"] == "cancel":
+            raise OdooError(f"PO {po_id} is cancelled; create a new order instead",
+                            "purchase.order", "add_po_lines")
+        vendor_id = _id_of(order["partner_id"])
+        created = []
+        for line in lines:
+            product_id, qty = line[0], line[1]
+            price = line[2] if len(line) > 2 and line[2] is not None else self.vendor_price(
+                vendor_id, product_id, qty)
+            values: dict[str, Any] = {"order_id": po_id, "product_id": product_id,
+                                      "product_qty": qty, "price_unit": price}
+            line_date = line[3] if len(line) > 3 and line[3] else order.get("date_planned")
+            if line_date:
+                values["date_planned"] = line_date
+            created.append(self.call("purchase.order.line", "create", [values]))
+        return created
 
     def _check_origin_feeds(self, vendor_id: int, lines: Sequence[tuple],
                             date_planned: str | None, origin: str) -> None:
@@ -1161,10 +1217,25 @@ class Erp:
             self._validate_picking(picking["id"])
         return [p["id"] for p in pickings]
 
-    def invoice(self, so_id: int, method: str = "delivered", amount: float | None = None) -> list[int]:
+    def payment_term_id(self, name: str) -> int:
+        """The `account.payment.term` whose name contains `name` (e.g. "Immediate")."""
+        rows = self.search_read("account.payment.term", [("name", "ilike", name)], ["name"], limit=5)
+        if not rows:
+            names = [r["name"] for r in self.search_read("account.payment.term", [], ["name"], limit=20)]
+            raise OdooError(f"no payment term matching {name!r}; available: {names}",
+                            "account.payment.term", "payment_term_id")
+        exact = [r for r in rows if r["name"].lower() == name.lower()]
+        return (exact or rows)[0]["id"]
+
+    def invoice(self, so_id: int, method: str = "delivered", amount: float | None = None,
+                payment_term: str | None = None) -> list[int]:
         """Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
 
-        `method`: `"delivered"` (regular invoice for what has shipped), `"percentage"` (a
+        `payment_term`: a payment-term name to set on the order and the new invoices
+        ("Immediate Payment"), when the task names one.
+
+        `method`: `"delivered"` (regular invoice for what has shipped, or for the ordered
+        quantities when the product's invoice policy is "order"), `"percentage"` (a
         down payment of `amount` percent of the order), or `"fixed"` (a down payment of
         `amount` currency units). A down-payment flow is: `invoice(so, "percentage", 20)`,
         post it, deliver, then `invoice(so, "delivered")` for the balance and post that.
@@ -1172,6 +1243,12 @@ class Erp:
         Returns the new `account.move` ids (the difference in `invoice_ids` around the call
         — the wizard's own return value is a UI action, not the ids).
         """
+        # A task that names payment terms ("Immediate Payment") wants them on the order and
+        # on every linked invoice; the term is set on the order first so the invoice
+        # inherits it, and written on the invoices as well in case it did not.
+        term_id = self.payment_term_id(payment_term) if payment_term else None
+        if term_id:
+            self.call("sale.order", "write", [[so_id], {"payment_term_id": term_id}])
         if method not in ("delivered", "percentage", "fixed"):
             raise OdooError(f"method must be delivered, percentage or fixed, not {method!r}",
                             "sale.advance.payment.inv", "invoice")
@@ -1194,6 +1271,8 @@ class Erp:
                 "create_invoices produced no invoice; check that the order is confirmed "
                 "and something has been delivered",
                 "sale.advance.payment.inv", "create_invoices")
+        if term_id and created:
+            self.call("account.move", "write", [created, {"invoice_payment_term_id": term_id}])
         return created
 
     def _so_invoice_ids(self, so_id: int) -> list[int]:

@@ -676,3 +676,22 @@ def test_component_shortage_is_simulated_in_start_order(erp, made):
     finally:
         erp.cancel("mrp.production", a)
         erp.cancel("mrp.production", b)
+
+
+def test_a_supplier_offer_split_across_two_pos_is_detected(erp, offer):
+    from lib import check
+
+    lines = [(offer["product_id"], max(offer["min_qty"], 1))]
+    a = erp.create_po(offer["vendor_id"], lines, date_planned="2026-12-01 08:00:00")
+    erp.confirm_po(a)
+    b = erp.create_po(offer["vendor_id"], lines, date_planned="2026-12-01 08:00:00", force=True)
+    erp.confirm_po(b)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "po_consolidated") == "FAIL"
+        assert "add_po_lines" in evidence_of(table, "po_consolidated")
+        erp.cancel("purchase.order", b)
+        assert status_of(check.invariants(erp), "po_consolidated") == "pass"
+    finally:
+        erp.cancel("purchase.order", a)
+        erp.cancel("purchase.order", b)

@@ -1013,6 +1013,26 @@ to any agent; the helpers now assume `ALT_RATE_MARGIN` (1.5×) for a centre with
 own operation, label it "assumed … (not stated)", and the playbook says to leave that
 headroom. Dev scenarios that state alternate rates put them at 1.18–1.40×.
 
+### dev40 (running): three more stated rules the library did not carry
+
+- **2279 easy repair, `po_consolidation_compliance`** (pi passed; v0 and now failed the
+  same way): kept the vendor's 12-unit PO and opened a second 4-unit PO with the same
+  vendor for the same product. "One consolidated PO per supplier offer" is in every
+  purchasing instruction. Now: `po_consolidated` (hard, confirmed orders), a write-time
+  refusal in `create_po` naming the order to extend, and `erp.add_po_lines(po_id, lines)`
+  — Odoo accepts new lines on a confirmed order.
+- **2217 split-by-capacity, `retained_order_has_expected_invoice_flow` ×3** (B_bash v0
+  failed the same): the task says "after confirming each retained order, create and post
+  exactly one linked invoice … Immediate Payment terms"; the model invoiced only the
+  three delivered orders (the playbook's default). Now: `erp.invoice(so, payment_term=)`
+  sets the term on the order and the invoices; soft `so_invoiced` lists confirmed orders
+  without a posted invoice; the playbook says a stated invoicing policy applies to every
+  retained order, delivered or not.
+- **2235 hard, killed by the task's 3600 s agent timeout** at step 40 with five plans
+  compared and none executed (pi: 0 timeouts in 40 dev40 trials; B_bash 3; C v0 2).
+  Now: `time_budget_s` (3300) — budget in the first message, elapsed time in every
+  status line, "execute now" at 70%, "finish now" at 88%.
+
 ## Freeze
 
 *(P3.7)*

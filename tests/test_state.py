@@ -27,6 +27,12 @@ def kernel(dev_container_name):
         "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGUSER": "odoo",
         "PGPASSWORD": "odoo", "PGDATABASE": "bench",
     })
+    # Leftover confirmed orders from other modules would trip the one-PO-per-offer guard
+    # inside this module's rehearsal plans.
+    kern.run("""
+for po in erp.search_read('purchase.order', [('state', 'in', ('purchase', 'sent', 'to approve'))], ['id'], limit=200):
+    erp.cancel('purchase.order', po['id'])
+""", timeout=120)
     yield kern
     kern.run("state.drop('t_snap')", timeout=60)
     kern.stop()

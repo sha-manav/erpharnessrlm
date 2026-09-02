@@ -704,6 +704,64 @@ def _workcenter_capacity(client) -> tuple[bool, str]:
                   else "no work centre states a minute limit")
 
 
+def _so_invoiced(client) -> tuple[bool, str]:
+    """Soft — confirmed sales orders with no posted invoice, as a reminder.
+
+    The default rule (invoice what you delivered) is right until a task states an
+    invoicing policy — "after confirming each retained order, create and post exactly one
+    linked invoice", down payments, named payment terms — which applies to every retained
+    order, delivered or not. A dev40 trial invoiced the three delivered orders and lost on
+    the other six. Soft, because a delivery-policy task legitimately leaves these open.
+    """
+    orders = client.search_read(
+        "sale.order", [("state", "in", ("sale", "done"))], ["name", "invoice_ids", "invoice_status"],
+        limit=200)
+    if not orders:
+        return True, "no confirmed sales orders"
+    inv_ids = sorted({i for o in orders for i in (o.get("invoice_ids") or [])})
+    posted = {m["id"] for m in client.search_read(
+        "account.move", [("id", "in", inv_ids), ("state", "=", "posted")], ["id"], limit=500)} if inv_ids else set()
+    missing = [o["name"] for o in orders if not any(i in posted for i in (o.get("invoice_ids") or []))]
+    if missing:
+        return False, (f"{len(missing)} confirmed order(s) without a posted invoice: {', '.join(missing[:8])}"
+                       f"{' …' if len(missing) > 8 else ''}. Fine under a deliver-then-invoice policy; if "
+                       "the task says to invoice after confirming (or names payment terms / a down "
+                       "payment), apply it to every retained order: erp.invoice(so_id, "
+                       "payment_term=...)")
+    return True, f"every confirmed sales order has a posted invoice ({len(orders)})"
+
+
+def _po_consolidated(client) -> tuple[bool, str]:
+    """Hard — one purchase order per supplier offer (vendor × product).
+
+    A stated rule on every purchasing task, and the single failing rule on a repair trial
+    that kept a vendor's 12-unit order and opened a second 4-unit order with the same
+    vendor for the same product. Cancelled orders do not count.
+    """
+    lines = client.search_read(
+        "purchase.order.line",
+        [("order_id.state", "in", ("purchase", "done"))],      # drafts are the drafts check's
+        ["order_id", "partner_id", "product_id"], limit=500)
+    offers: dict[tuple, set] = {}
+    names: dict[int, str] = {}
+    for line in lines:
+        if not line["product_id"] or not line["partner_id"] or not line["order_id"]:
+            continue
+        key = (line["partner_id"][0], line["product_id"][0])
+        offers.setdefault(key, set()).add(line["order_id"][0])
+        names[line["order_id"][0]] = line["order_id"][1]
+        names[key] = f"{line['partner_id'][1]} / {line['product_id'][1]}"
+    split = {key: pos for key, pos in offers.items() if len(pos) > 1}
+    if split:
+        shown = "; ".join(f"{names[key]}: {', '.join(sorted(names[p] for p in pos))}"
+                          for key, pos in list(split.items())[:4])
+        more = f" (+{len(split) - 4} more)" if len(split) > 4 else ""
+        return False, (f"{len(split)} supplier offer(s) split across purchase orders: {shown}{more}. "
+                       "One PO per vendor and product: move the lines onto one order "
+                       "(erp.add_po_lines(po_id, lines)) and cancel the other.")
+    return True, f"every supplier offer sits on a single purchase order ({len(offers)})"
+
+
 def _so_has_commitment_date(client) -> tuple[bool, str]:
     """Soft — every confirmed customer order has a commitment date.
 
@@ -746,6 +804,8 @@ INVARIANTS: list[Check] = [
           _workcenter_capacity),
     Check("so_has_commitment_date", "every confirmed sales order has a commitment date", True,
           _so_has_commitment_date),
+    Check("po_consolidated", "one purchase order per supplier offer", True, _po_consolidated),
+    Check("so_invoiced", "confirmed orders carry a posted invoice (policy-dependent)", False, _so_invoiced),
 ]
 
 
