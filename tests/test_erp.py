@@ -204,3 +204,63 @@ def test_so_confirm_deliver_invoice_post(erp, catalogue):
     posted = erp.get("account.move", invoice_ids, ["state", "amount_total"]).all()
     assert all(row["state"] == "posted" for row in posted)
     assert all(row["amount_total"] > 0 for row in posted)
+
+
+# -- planning helpers ---------------------------------------------------------
+def test_feasible_vendors_excludes_those_who_cannot_make_the_date(erp, catalogue):
+    """The arithmetic behind 17 of 23 stock-harness failures, as a function."""
+    offers = erp.suppliers([catalogue["product_id"]]).all()
+    slowest = max(o["delay_days"] or 0 for o in offers)
+    fastest = min(o["delay_days"] or 0 for o in offers)
+    from datetime import datetime, timedelta
+    today = datetime.utcnow()
+
+    # A due date only the fastest vendor can meet.
+    tight = (today + timedelta(days=fastest, hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    table = erp.feasible_vendors(catalogue["product_id"], 5, tight)
+    assert all(row["delay_days"] <= fastest for row in table.all()), str(table)
+    assert all(row["arrives"] <= tight for row in table.all())
+
+    # A due date everyone can meet lists everyone, cheapest first.
+    loose = (today + timedelta(days=slowest + 5)).strftime("%Y-%m-%d %H:%M:%S")
+    table = erp.feasible_vendors(catalogue["product_id"], 5, loose)
+    assert len(table) == len(offers)
+    totals = [row["line_total"] for row in table.all()]
+    assert totals == sorted(totals)
+
+    # A due date nobody can meet is an empty table, not an exception. (Some vendors
+    # ship same-day, so "today" is feasible; yesterday is not.)
+    yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    assert len(erp.feasible_vendors(catalogue["product_id"], 5, yesterday)) == 0
+
+
+def test_feasible_vendors_rounds_up_to_the_minimum_quantity(erp, catalogue):
+    offer = max(erp.suppliers([catalogue["product_id"]]).all(), key=lambda o: o["min_qty"] or 0)
+    if (offer["min_qty"] or 0) < 2:
+        pytest.skip("no vendor with a minimum above 1")
+    from datetime import datetime, timedelta
+    loose = (datetime.utcnow() + timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+    row = next(r for r in erp.feasible_vendors(catalogue["product_id"], 1, loose).all()
+               if r["vendor_id"] == offer["vendor_id"])
+    assert row["order_qty"] == offer["min_qty"]
+    assert row["line_total"] == pytest.approx(offer["price"] * offer["min_qty"])
+
+
+def test_earliest_build_accounts_for_component_lead_times(erp):
+    boms = erp.boms()
+    if not len(boms):
+        pytest.skip("no manufacturing route in this scenario")
+    bom = boms.all()[0]
+    finished = erp.search_read("mrp.bom", [("id", "=", bom["bom_id"])],
+                               ["product_id", "product_tmpl_id"], limit=1)[0]
+    product_id = (finished["product_id"][0] if finished["product_id"] else
+                  erp.search_read("product.product",
+                                  [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
+                                  ["id"], limit=1)[0]["id"])
+    plan = erp.earliest_build(product_id, 10_000)      # far beyond any stock
+    assert plan["components"], plan
+    assert plan["date_start"] >= erp.today()
+    for comp in plan["components"]:
+        if comp.get("ready") is not None and comp.get("buy"):
+            assert comp["ready"] <= plan["date_start"]     # start waits for the slowest part
+            assert comp["from"]

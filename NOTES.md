@@ -844,6 +844,29 @@ moved → accepted), 3–9 (tests). What is **not** verified and decides the res
 model acts usefully on a refusal. The pre-registered $4 dev5 checkpoint tests exactly that:
 cache ≥ 60%, ≥1 refusal subsequently resolved, 0 NameErrors, 0 api_errors.
 
+## Checkpoint pass 1 (2026-09-02) — what the model does with a working gate
+
+dev5, N=3, three trials scored before the run finished: 2 passes at 100.0, one fail at
+22.8 (`2017`). Against the pre-registered bar: NameErrors 0 (pass), api_errors 0 (pass),
+**cache 39% (fail)**, **refusals 0 (fail)**. Each failure traced and fixed:
+
+* **Chutes barely honours the prompt cache.** 8-turn probe: Chutes 6%, GMICloud 46% (61%
+  after two cold-start writes). All 98 calls in this run routed to Chutes. pi lands on
+  GMICloud 9 times in 10; that is a large part of its 83%. Now `only: [gmicloud]`.
+* **`timeline_feasible` trusted the date the agent wrote.** `2017` wrote `date_planned`
+  "Sep 9, 7 days from Sep 2" for a 19-day vendor, then received the goods on day 0; the
+  check skipped received lines as "already arrived". Arrival is now
+  `max(date_planned, order date + supplierinfo.delay)`, received or not.
+* **The playbook coached the losing move.** Its example said `confirm_po` then
+  `receive(po)`. Of 17 passing stock-harness dev40 trials, **14 left POs confirmed and never
+  validated the receipt**. Playbook and contract now say: confirm, set a date the vendor
+  can meet, do not receive; deliver only from stock on hand.
+* **The arithmetic is now a function call.** `erp.feasible_vendors(product, qty, need_by)`
+  returns only vendors who can land it in time, with the arrival date to use as
+  `date_planned`; `erp.earliest_build(product, qty)` says when an MO can start and what to
+  buy. `state.rehearse(plan_fn)` does snapshot → run → `check.all()` → drop in one call.
+  Refusal messages point at these.
+
 ## Freeze
 
 *(P3.7)*

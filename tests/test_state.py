@@ -132,3 +132,22 @@ print('Vendor offers' in text, 'Products' in text, 'Bills of materials' in text)
     from lib.brief import CHAR_BUDGET  # noqa: PLC0415
     assert int(lines[0]) <= CHAR_BUDGET + 100, f"briefing is {lines[0]} chars, over budget"
     assert lines[1] == "True True True"
+
+
+def test_rehearse_runs_the_plan_on_a_clone_and_returns_checks(kernel):
+    """One call for what the contract used to ask the agent to orchestrate by hand."""
+    out = run(kernel, """
+before = erp.count('purchase.order')
+def plan_fn(client):
+    o = client.suppliers().all()[0]
+    po = client.create_po(o['vendor_id'], [(o['product_id'], max(o['min_qty'], 1))],
+                          date_planned='2026-12-01 08:00:00')
+    client.confirm_po(po)
+table = state.rehearse(plan_fn)
+print('rows:', len(table.all()) > 0)
+print('main unchanged:', erp.count('purchase.order') == before)
+print('clone dropped:', 'rehearsal' not in [r['database'] for r in state.list().all()])
+""", timeout=240)
+    assert "rows: True" in out
+    assert "main unchanged: True" in out
+    assert "clone dropped: True" in out

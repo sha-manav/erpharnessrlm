@@ -29,6 +29,9 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 - `productions(state=None, ids=None)`
 - `pickings(picking_type=None, state=None, origin=None)`
 - `invoices(move_type='out_invoice', state=None)`
+- `today()` — The server's idea of now, as an Odoo datetime string (UTC).
+- `feasible_vendors(product_id, qty, need_by, order_date=None)` — Vendors who can land `qty` of a product by `need_by`, with the arrival date.
+- `earliest_build(product_id, qty, order_date=None)` — When an MO for `qty` could start, given components on hand and purchasable.
 - `create_po(vendor_id, lines, date_planned=None, origin=None)` — Create a purchase order. `lines` = [(product_id, qty[, price_unit[, date_planned]])].
 - `vendor_price(vendor_id, product_id, qty)` — The supplierinfo price for this vendor/product at this quantity tier.
 - `confirm_po(po_id)` — `purchase.order.button_confirm`.
@@ -101,6 +104,7 @@ Database snapshots and the dry-run protocol (PLAN.md P3.2).
 - `drop(name)`
 - `list()`
 - `diff(a='start', b=None)` — What changed between two databases, per model.
+- `rehearse(plan_fn, name='rehearsal')` — Run `plan_fn(client)` on a throwaway clone and return `check.all()` for it.
 
 ## `fmt`
 

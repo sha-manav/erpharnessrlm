@@ -18,19 +18,19 @@ A constraint you did not write down is a constraint you will forget by step 20.
 **2. Investigate read-only, on main.** Use `erp` reads (and `db.sql` if it is listed
 below). Never guess a field name — `erp.fields("stock.move", "qty")` tells you what exists.
 
-**3. Write the plan as a re-runnable function, then rehearse it** (if `state` is listed
-below).
+**3. Write the plan as a re-runnable function, then rehearse it in one call** (if
+`state` is listed below).
 
 ```python
 def plan_fn(client):  # looks records up by name/domain — never by ids from a rehearsal
     ...
-state.snapshot("s1")
-plan_fn(erp.on("s1")); check.all(erp.on("s1"))   # fix and repeat until clean
+print(state.rehearse(plan_fn))   # runs it on a throwaway clone, returns check.all() for it
 ```
 
-Rehearsing is the cheapest way to find a broken plan: `check.all()` on the clone tells you
-whether your receipts land before their due dates and whether your MOs have components,
-before any of it is real.
+If the table shows a hard FAIL, fix `plan_fn` and rehearse again. Use
+`erp.feasible_vendors(...)` and `erp.earliest_build(...)` for every date — they are the
+arithmetic the checks apply. Rehearsing is the cheapest way to find a broken plan: it
+costs one step, and nothing in it is real.
 
 **4. Execute on main, verify, then finish.** Run `plan_fn(erp)`, run `check.all()`, then
 call `finish(summary)`. `finish` refuses while a hard check fails — that refusal is the

@@ -424,6 +424,96 @@ class Erp:
               "invoice_origin": r.get("invoice_origin") or ""} for r in rows],
             ["id", "name", "partner", "state", "amount_total", "invoice_origin"], "account.move")
 
+    # -- planning helpers -----------------------------------------------------
+    def today(self) -> str:
+        """The server's idea of now, as an Odoo datetime string (UTC)."""
+        row = self.call("res.users", "read", [[self.uid]], {"fields": ["login_date"]})
+        stamp = (row[0].get("login_date") if row else None) or ""
+        if not stamp:
+            from datetime import datetime, timezone
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return stamp[:19]
+
+    def feasible_vendors(self, product_id: int, qty: float, need_by: str,
+                         order_date: str | None = None) -> Table:
+        """Vendors who can land `qty` of a product by `need_by`, with the arrival date.
+
+        This is the arithmetic behind 17 of the 23 coded stock-harness failures: goods
+        arrive at order date + the vendor's lead time, whatever date is typed into the PO.
+        Every row here satisfies `arrives <= need_by` and `qty >= min_qty` (or says how far
+        short), sorted cheapest first. An empty table means no listed vendor can make the
+        date -- say so in the summary instead of inventing a date.
+
+        `vendor_notes` carries the vendor's Internal Notes verbatim, where a maximum order
+        quantity is stated when a task has one.
+        """
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime((order_date or self.today())[:19], "%Y-%m-%d %H:%M:%S")
+        due = datetime.strptime(need_by[:19] if len(need_by) > 10 else need_by + " 23:59:59",
+                                "%Y-%m-%d %H:%M:%S")
+        rows = []
+        for offer in self.suppliers([product_id]).all():
+            arrives = start + timedelta(days=int(offer["delay_days"] or 0))
+            if arrives > due:
+                continue
+            shortfall = max(0.0, (offer["min_qty"] or 0) - qty)
+            rows.append({
+                "vendor_id": offer["vendor_id"], "vendor": offer["vendor"],
+                "price": offer["price"], "min_qty": offer["min_qty"],
+                "order_qty": max(qty, offer["min_qty"] or 0),
+                "delay_days": offer["delay_days"],
+                "arrives": arrives.strftime("%Y-%m-%d %H:%M:%S"),
+                "slack_days": (due - arrives).days,
+                "line_total": round(offer["price"] * max(qty, offer["min_qty"] or 0), 2),
+                "vendor_notes": offer["vendor_notes"],
+            })
+        rows.sort(key=lambda r: (r["line_total"], -r["slack_days"]))
+        return Table(rows, ["vendor_id", "vendor", "price", "min_qty", "order_qty",
+                            "delay_days", "arrives", "slack_days", "line_total", "vendor_notes"],
+                     f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]}")
+
+    def earliest_build(self, product_id: int, qty: float, order_date: str | None = None) -> dict:
+        """When an MO for `qty` could start, given components on hand and purchasable.
+
+        For every BOM component: what is free now, and if short, the earliest any vendor can
+        land the rest. The MO's date_start must be on or after the latest of those. Returns
+        the date, the per-component detail, and any component nobody can supply.
+        """
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime((order_date or self.today())[:19], "%Y-%m-%d %H:%M:%S")
+        bom_rows = [r for r in self.boms([product_id]).all() if r["component_id"]]
+        if not bom_rows:
+            return {"date_start": start.strftime("%Y-%m-%d %H:%M:%S"),
+                    "components": [], "unsourceable": [], "note": "no BOM for this product"}
+        batch = bom_rows[0]["bom_qty"] or 1.0
+        free = {r["product_id"]: r["free"] for r in self.stock([r["component_id"] for r in bom_rows])}
+        detail, unsourceable, latest = [], [], start
+        for row in bom_rows:
+            need = (row["comp_qty"] or 0) * qty / batch
+            have = free.get(row["component_id"], 0.0)
+            entry = {"component_id": row["component_id"], "component": row["component"],
+                     "needed": round(need, 3), "free_now": have}
+            if have + 1e-6 >= need:
+                entry["ready"] = start.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                offers = sorted(self.suppliers([row["component_id"]]).all(),
+                                key=lambda o: (o["delay_days"] or 0, o["price"] or 0))
+                if not offers:
+                    unsourceable.append(row["component"])
+                    entry["ready"] = None
+                else:
+                    o = offers[0]
+                    arrives = start + timedelta(days=int(o["delay_days"] or 0))
+                    entry.update({"buy": round(max(need - have, o["min_qty"] or 0), 3),
+                                  "from": o["vendor"], "vendor_id": o["vendor_id"],
+                                  "ready": arrives.strftime("%Y-%m-%d %H:%M:%S")})
+                    latest = max(latest, arrives)
+            detail.append(entry)
+        return {"date_start": latest.strftime("%Y-%m-%d %H:%M:%S"),
+                "components": detail, "unsourceable": unsourceable}
+
     # -- writes ---------------------------------------------------------------
     def create_po(self, vendor_id: int, lines: Sequence[tuple], date_planned: str | None = None,
                   origin: str | None = None) -> int:

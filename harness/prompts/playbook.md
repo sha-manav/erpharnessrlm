@@ -52,10 +52,20 @@ Enumerate every feasible option for each shortage before choosing one:
 * buy from each vendor that lists the product, at each `min_qty` tier;
 * make it, if a BOM exists — then recurse onto its components.
 
-For each option compute the **earliest completion date** first — `order date +
-supplierinfo.delay` for a purchase; component arrival plus build time for a manufacture —
-and only then the **total landed cost**. Compare every option's completion date against
-every due date it is meant to cover, write the comparison as a table, and only then act.
+Do not do the date arithmetic by hand — it is where plans go wrong. Two helpers do it
+against the live data:
+
+```python
+erp.feasible_vendors(product_id, qty, need_by)   # only vendors who can land it in time:
+                                                  # arrival date (use as date_planned), MOQ,
+                                                  # line total, vendor notes; cheapest first
+erp.earliest_build(product_id, qty)              # when an MO can start: per-component
+                                                  # stock, what to buy from whom, arrival
+```
+
+An empty `feasible_vendors` table means no listed vendor can make the date — cover the
+demand from stock or manufacturing, or say so in the summary. Never invent a
+`date_planned` earlier than the arrival these return.
 
 Dates are where these plans go wrong. A plan that is correct in vendor, quantity and price
 but whose receipt lands one day after the commitment date covers nothing. Check, for every

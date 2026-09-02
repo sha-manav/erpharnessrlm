@@ -166,4 +166,27 @@ class State:
             [], ["model", "created", "changed"], f"{title} (no differences)")
 
 
+    def rehearse(self, plan_fn, name: str = "rehearsal"):
+        """Run `plan_fn(client)` on a throwaway clone and return `check.all()` for it.
+
+        Four steps the contract asked the agent to orchestrate by hand -- snapshot, run,
+        check, drop -- in one call, so a refused plan costs one step to find and one to
+        fix instead of six. The plan function must look records up by name or domain, never
+        by ids: the clone numbers its own records.
+        """
+        from .erp import erp
+        from . import check as check_module
+
+        self.snapshot(name)
+        client = erp.on(name)
+        try:
+            plan_fn(client)
+            return check_module.all(client)
+        finally:
+            try:
+                self.drop(name)
+            except Exception:   # noqa: BLE001 - a leftover clone is not worth failing over
+                pass
+
+
 state = State()

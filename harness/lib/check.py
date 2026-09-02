@@ -311,9 +311,10 @@ def _timeline_feasible(client) -> tuple[bool, str]:
         more = f" (+{len(late) - 5} more)" if len(late) > 5 else ""
         return False, (
             f"{len(late)} receipt(s) land after the demand they feed: {shown}{more}. "
-            "Fix: set the PO line's date_planned no later than the need date if the vendor's "
-            "delay allows (order date + delay <= need date), otherwise source from a vendor "
-            "with a shorter delay, or from stock/manufacturing; erp.suppliers() lists delays.")
+            "Fix: erp.feasible_vendors(product_id, qty, need_by) lists only vendors who can "
+            "land it in time, with the arrival date to use as date_planned; if it is empty, "
+            "cover the demand from stock or manufacturing, or state in the summary that no "
+            "vendor can make the date. Do not receive goods before they can arrive.")
     return True, f"every outstanding receipt lands on or before its need date ({len(need_by)} product(s))"
 
 
@@ -389,9 +390,9 @@ def _mo_feasible(client) -> tuple[bool, str]:
         more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
         return False, (
             f"{len(problems)} component shortfall(s): {shown}{more}. "
-            "Fix: buy the missing components with a receipt landing on or before the MO's "
-            "date_start, or move date_start later than the component receipt, or build the "
-            "component first if it has a BOM.")
+            "Fix: erp.earliest_build(product_id, qty) says when every component can be on "
+            "hand and what to buy from whom; set the MO's date_start no earlier than that, "
+            "and place the component POs it lists.")
     return True, f"every unfinished MO's components are covered ({len(productions)} MO(s))"
 
 
