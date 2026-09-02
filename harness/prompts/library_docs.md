@@ -28,10 +28,11 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 - `po_lines(po_ids)`
 - `productions(state=None, ids=None)`
 - `pickings(picking_type=None, state=None, origin=None)`
+- `workcenters()` — Work centres with their capacity numbers — the input to any assembly-capacity rule.
 - `invoices(move_type='out_invoice', state=None)`
 - `today()` — The server's idea of now, as an Odoo datetime string (UTC).
 - `feasible_vendors(product_id, qty, need_by, order_date=None)` — Vendors who can land `qty` of a product by `need_by`, with the arrival date.
-- `earliest_build(product_id, qty, order_date=None)` — When an MO for `qty` could start, given components on hand and purchasable.
+- `earliest_build(product_id, qty, order_date=None, _depth=0)` — When an MO for `qty` could start, given components on hand, purchasable, or buildable.
 - `create_po(vendor_id, lines, date_planned=None, origin=None, force=False)` — Create a purchase order. `lines` = [(product_id, qty[, price_unit[, date_planned]])].
 - `vendor_price(vendor_id, product_id, qty)` — The supplierinfo price for this vendor/product at this quantity tier.
 - `confirm_po(po_id)` — `purchase.order.button_confirm`.
@@ -40,7 +41,7 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 - `confirm_mo(mo_id)` — `mrp.production.action_confirm`.
 - `produce(mo_id, qty=None)` — Reserve, set `qty_producing`, consume the components, and mark done.
 - `deliver(so_id)` — Validate every outgoing picking of a sales order.
-- `invoice(so_id)` — Create the customer invoice(s) for a delivered sales order.
+- `invoice(so_id, method='delivered', amount=None)` — Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
 - `post(invoice_ids)` — `account.move.action_post`.
 - `cancel(model, ids)` — Cancel records with whichever cancel method the model exposes.
 

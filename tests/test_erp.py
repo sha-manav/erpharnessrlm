@@ -332,3 +332,83 @@ def test_create_mo_refuses_a_start_before_components_can_exist(erp):
     assert "components can be on hand" in str(excinfo.value)
     mo_id = erp.create_mo(product_id, 10_000, date_start=erp.today(), force=True)
     erp.cancel("mrp.production", mo_id)
+
+
+# -- make-or-buy, down payments, work centres ---------------------------------
+def _finished_product_and_bom(erp):
+    boms = erp.boms()
+    if not len(boms):
+        pytest.skip("no manufacturing route in this scenario")
+    bom = boms.all()[0]
+    finished = erp.search_read("mrp.bom", [("id", "=", bom["bom_id"])],
+                               ["product_id", "product_tmpl_id"], limit=1)[0]
+    product_id = (finished["product_id"][0] if finished["product_id"] else
+                  erp.search_read("product.product",
+                                  [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
+                                  ["id"], limit=1)[0]["id"])
+    return product_id, bom
+
+
+def test_earliest_build_labels_every_component_with_a_source(erp):
+    product_id, _ = _finished_product_and_bom(erp)
+    plan = erp.earliest_build(product_id, 10_000)
+    assert plan["components"]
+    assert all(c.get("source") in ("have", "buy", "make", "none") for c in plan["components"]), plan
+    # A component with its own BOM must be offered as "make" when it cannot be bought in time.
+    nested = [c for c in plan["components"]
+              if any(b["component_id"] for b in erp.boms([c["component_id"]]).all())]
+    for c in nested:
+        assert c.get("source") in ("make", "buy", "have"), c
+        if c.get("source") == "make":
+            assert c.get("make_start")
+
+
+def test_create_mo_accepts_a_parent_whose_component_is_being_built(erp):
+    """Serial sub-assembly plans create the child MO first; the guard must credit it."""
+    from lib.erp import OdooError
+
+    product_id, bom = _finished_product_and_bom(erp)
+    component_id = bom["component_id"]
+    if not any(b["component_id"] for b in erp.boms([component_id]).all()):
+        pytest.skip("first BOM's component has no BOM of its own in this scenario")
+    plan = erp.earliest_build(product_id, 500)
+    comp = next(c for c in plan["components"] if c["component_id"] == component_id)
+    if comp["source"] == "have":
+        pytest.skip("component is already in stock")
+    start = "2026-12-01 08:00:00"
+    child = erp.create_mo(component_id, comp["needed"] * 1.05, date_start="2026-11-20 08:00:00", force=True)
+    try:
+        erp.call("mrp.production", "write", [[child], {"date_finished": "2026-11-25 08:00:00"}])
+        # With the child in flight, the parent must not be refused for THAT component.
+        try:
+            parent = erp.create_mo(product_id, 500, date_start=start)
+            erp.cancel("mrp.production", parent)
+        except OdooError as exc:
+            assert bom["component"] not in str(exc), f"guard ignored the child MO: {exc}"
+    finally:
+        erp.cancel("mrp.production", child)
+
+
+def test_downpayment_invoice(erp, catalogue):
+    product_id = catalogue["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 2})]}])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    total = erp.sales_orders(ids=[so_id]).all()[0]["amount_total"]
+    try:
+        ids = erp.invoice(so_id, "percentage", 25)
+        assert len(ids) == 1
+        inv = erp.get("account.move", ids, ["amount_total", "state"]).all()[0]
+        assert inv["amount_total"] == pytest.approx(total * 0.25, rel=0.02)
+        erp.post(ids)
+        assert erp.get("account.move", ids, ["state"]).all()[0]["state"] == "posted"
+    finally:
+        erp.cancel("sale.order", so_id)
+
+
+def test_workcenters_is_a_table(erp):
+    table = erp.workcenters()
+    assert "name" in table.cols

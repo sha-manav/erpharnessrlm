@@ -380,6 +380,16 @@ def _mo_feasible(client) -> tuple[bool, str]:
                             arrives = max(arrives, earliest)
                     if arrives[:10] <= start[:10]:
                         available += outstanding
+                # A sub-assembly being built by another MO that finishes first counts too:
+                # serial sub-assembly plans are the norm in a third of the patterns.
+                for child in client.search_read(
+                        "mrp.production",
+                        [("product_id", "=", cid), ("state", "not in", ("done", "cancel")),
+                         ("id", "!=", production["id"])],
+                        ["product_qty", "date_start", "date_finished"], limit=50):
+                    finishes = child.get("date_finished") or child.get("date_start") or ""
+                    if start and finishes and finishes[:10] <= start[:10]:
+                        available += child["product_qty"] or 0
             if available + 1e-6 < required:
                 problems.append(
                     f"{production['name']}: needs {required:g} {cname} by "

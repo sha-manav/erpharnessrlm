@@ -16,7 +16,7 @@ from .fmt import Table
 
 EXPORTS = ["brief"]
 
-CHAR_BUDGET = 6500   # ~1,900 tokens at the measured 0.30 tokens/char; sections sum to 5,900
+CHAR_BUDGET = 6900   # ~2,000 tokens at the measured 0.30 tokens/char; sections sum to 6,300
 
 
 def _section(title: str, table: Table, rows: int, chars: int) -> str:
@@ -43,6 +43,7 @@ SECTIONS = {
     "sales": (12, 500),
     "purchases": (12, 500),
     "productions": (12, 400),
+    "workcenters": (10, 400),
 }
 
 
@@ -93,6 +94,7 @@ def render(client=None, char_budget: int = CHAR_BUDGET) -> str:
     add("Open sales orders", lambda: client.sales_orders(), "sales")
     add("Open purchase orders", lambda: client.purchase_orders(), "purchases")
     add("Manufacturing orders", lambda: client.productions(), "productions")
+    add("Work centres (capacity)", lambda: client.workcenters(), "workcenters")
 
     text = "\n\n".join(parts)
     if len(text) > char_budget:   # belt and braces; the section budgets sum below this

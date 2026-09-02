@@ -417,6 +417,40 @@ class Erp:
               "scheduled_date": r["scheduled_date"]} for r in rows],
             ["id", "name", "picking_type", "origin", "state", "scheduled_date"], "stock.picking")
 
+    def workcenters(self) -> Table:
+        """Work centres with their capacity numbers — the input to any assembly-capacity rule.
+
+        Odoo 19 has no `default_capacity` on the work centre; per-product capacities live in
+        `mrp.workcenter.capacity` rows (`capacity_ids`), and throughput otherwise comes from
+        the calendar plus `time_efficiency`. Both are surfaced here (field names verified
+        against the live image).
+        """
+        try:
+            rows = self.search_read(
+                "mrp.workcenter", [],
+                ["name", "time_efficiency", "time_start", "time_stop", "resource_calendar_id",
+                 "costs_hour", "capacity_ids"], limit=100)
+        except OdooError as exc:
+            if "not exist" in str(exc) or "Object" in str(exc):
+                return Table([], ["id", "name"], "mrp.workcenter (not installed)")
+            raise
+        cap_ids = [c for r in rows for c in (r.get("capacity_ids") or [])]
+        caps: dict[int, list[str]] = {}
+        if cap_ids:
+            for c in self.call("mrp.workcenter.capacity", "read", [cap_ids],
+                               {"fields": ["workcenter_id", "product_id", "capacity"]}):
+                wc = _id_of(c.get("workcenter_id"))
+                caps.setdefault(wc, []).append(
+                    f"{_name_of(c.get('product_id'))}: {c.get('capacity')}")
+        return Table(
+            [{"id": r["id"], "name": r["name"], "efficiency_pct": r.get("time_efficiency"),
+              "setup_min": r.get("time_start"), "cleanup_min": r.get("time_stop"),
+              "cost_per_hour": r.get("costs_hour"),
+              "calendar": _name_of(r.get("resource_calendar_id")),
+              "per_product_capacity": "; ".join(caps.get(r["id"], [])) or ""} for r in rows],
+            ["id", "name", "efficiency_pct", "setup_min", "cleanup_min", "cost_per_hour",
+             "calendar", "per_product_capacity"], "mrp.workcenter")
+
     def invoices(self, move_type: str = "out_invoice", state: str | None = None) -> Table:
         domain: list = [("move_type", "=", move_type)] if move_type else []
         if state:
@@ -480,12 +514,18 @@ class Erp:
                             "delay_days", "arrives", "slack_days", "line_total", "vendor_notes"],
                      f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]}")
 
-    def earliest_build(self, product_id: int, qty: float, order_date: str | None = None) -> dict:
-        """When an MO for `qty` could start, given components on hand and purchasable.
+    def earliest_build(self, product_id: int, qty: float, order_date: str | None = None,
+                       _depth: int = 0) -> dict:
+        """When an MO for `qty` could start, given components on hand, purchasable, or buildable.
 
-        For every BOM component: what is free now, and if short, the earliest any vendor can
-        land the rest. The MO's date_start must be on or after the latest of those. Returns
-        the date, the per-component detail, and any component nobody can supply.
+        For every BOM component: what is free now; if short, whether it can be **bought**
+        (earliest vendor arrival) or **made** (it has its own BOM — recurse, and add the
+        sub-assembly's own earliest start). The MO's date_start must be on or after the
+        latest of those. Sub-assembly patterns are a third of the benchmark; a helper that
+        only knew how to buy would refuse their correct plans.
+
+        Returns date_start, per-component detail (with `source` = have / buy / make), and
+        any component that can be neither bought nor made.
         """
         from datetime import datetime, timedelta
 
@@ -503,20 +543,35 @@ class Erp:
             entry = {"component_id": row["component_id"], "component": row["component"],
                      "needed": round(need, 3), "free_now": have}
             if have + 1e-6 >= need:
-                entry["ready"] = start.strftime("%Y-%m-%d %H:%M:%S")
+                entry.update({"source": "have", "ready": start.strftime("%Y-%m-%d %H:%M:%S")})
+                detail.append(entry)
+                continue
+            shortfall = need - have
+            offers = sorted(self.suppliers([row["component_id"]]).all(),
+                            key=lambda o: (o["delay_days"] or 0, o["price"] or 0))
+            sub_bom = [b for b in self.boms([row["component_id"]]).all() if b["component_id"]]
+            buy_ready = make_ready = None
+            if offers:
+                o = offers[0]
+                buy_ready = start + timedelta(days=int(o["delay_days"] or 0))
+                entry.update({"buy": round(max(shortfall, o["min_qty"] or 0), 3),
+                              "from": o["vendor"], "vendor_id": o["vendor_id"]})
+            if sub_bom and _depth < 3:
+                sub = self.earliest_build(row["component_id"], shortfall, order_date, _depth + 1)
+                if not sub["unsourceable"]:
+                    make_ready = datetime.strptime(sub["date_start"][:19], "%Y-%m-%d %H:%M:%S")
+                    entry.update({"make": round(shortfall, 3), "make_start": sub["date_start"]})
+            if buy_ready is None and make_ready is None:
+                unsourceable.append(row["component"])
+                entry.update({"source": "none", "ready": None})
             else:
-                offers = sorted(self.suppliers([row["component_id"]]).all(),
-                                key=lambda o: (o["delay_days"] or 0, o["price"] or 0))
-                if not offers:
-                    unsourceable.append(row["component"])
-                    entry["ready"] = None
+                # Prefer whichever is ready sooner; ties go to buying (fewer moving parts).
+                if make_ready is not None and (buy_ready is None or make_ready < buy_ready):
+                    entry["source"], ready = "make", make_ready
                 else:
-                    o = offers[0]
-                    arrives = start + timedelta(days=int(o["delay_days"] or 0))
-                    entry.update({"buy": round(max(need - have, o["min_qty"] or 0), 3),
-                                  "from": o["vendor"], "vendor_id": o["vendor_id"],
-                                  "ready": arrives.strftime("%Y-%m-%d %H:%M:%S")})
-                    latest = max(latest, arrives)
+                    entry["source"], ready = "buy", buy_ready
+                entry["ready"] = ready.strftime("%Y-%m-%d %H:%M:%S")
+                latest = max(latest, ready)
             detail.append(entry)
         return {"date_start": latest.strftime("%Y-%m-%d %H:%M:%S"),
                 "components": detail, "unsourceable": unsourceable}
@@ -649,10 +704,12 @@ class Erp:
                     f"no vendor lists these components: {plan['unsourceable']}; the MO "
                     "cannot be built from purchases. Check stock, BOMs, or pass force=True.",
                     "mrp.production", "create_mo")
-            # Credit components already on confirmed POs that land in time.
+            # Credit components already covered: on confirmed POs landing in time, or on
+            # unfinished MOs for that component finishing in time (sub-assembly plans
+            # create the child MO first).
             incoming_ok = True
             for comp in plan["components"]:
-                if comp.get("buy"):
+                if comp.get("source") in ("buy", "make"):
                     on_order = sum(
                         (l["product_qty"] or 0) - (l["qty_received"] or 0)
                         for l in self.search_read(
@@ -661,7 +718,16 @@ class Erp:
                              ("state", "in", ("purchase", "done")),
                              ("date_planned", "<=", date_start)],
                             ["product_qty", "qty_received"], limit=50))
-                    if on_order + comp["free_now"] + 1e-6 < comp["needed"]:
+                    in_production = sum(
+                        m["product_qty"] or 0
+                        for m in self.search_read(
+                            "mrp.production",
+                            [("product_id", "=", comp["component_id"]),
+                             ("state", "not in", ("done", "cancel")),
+                             "|", ("date_finished", "<=", date_start),
+                                  ("date_start", "<=", date_start)],
+                            ["product_qty"], limit=50))
+                    if on_order + in_production + comp["free_now"] + 1e-6 < comp["needed"]:
                         incoming_ok = False
             if not incoming_ok and date_start[:10] < plan["date_start"][:10]:
                 raise OdooError(
@@ -728,18 +794,31 @@ class Erp:
             self._validate_picking(picking["id"])
         return [p["id"] for p in pickings]
 
-    def invoice(self, so_id: int) -> list[int]:
-        """Create the customer invoice(s) for a delivered sales order.
+    def invoice(self, so_id: int, method: str = "delivered", amount: float | None = None) -> list[int]:
+        """Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
 
-        Uses the `sale.advance.payment.inv` wizard with `advance_payment_method='delivered'`
-        and returns the new `account.move` ids (the difference in `invoice_ids` around the
-        call — the wizard's own return value is a UI action, not the ids).
+        `method`: `"delivered"` (regular invoice for what has shipped), `"percentage"` (a
+        down payment of `amount` percent of the order), or `"fixed"` (a down payment of
+        `amount` currency units). A down-payment flow is: `invoice(so, "percentage", 20)`,
+        post it, deliver, then `invoice(so, "delivered")` for the balance and post that.
+
+        Returns the new `account.move` ids (the difference in `invoice_ids` around the call
+        — the wizard's own return value is a UI action, not the ids).
         """
+        if method not in ("delivered", "percentage", "fixed"):
+            raise OdooError(f"method must be delivered, percentage or fixed, not {method!r}",
+                            "sale.advance.payment.inv", "invoice")
+        if method != "delivered" and amount is None:
+            raise OdooError(f"method={method!r} needs an amount", "sale.advance.payment.inv", "invoice")
+        values: dict[str, Any] = {"advance_payment_method": method}
+        if method != "delivered":
+            values["amount"] = amount if method == "percentage" else None
+            values["fixed_amount"] = amount if method == "fixed" else None
+            values = {k: v for k, v in values.items() if v is not None}
         before = set(self._so_invoice_ids(so_id))
         context = {"active_model": "sale.order", "active_ids": [so_id], "active_id": so_id}
         wizard_id = self.call(
-            "sale.advance.payment.inv", "create", [{"advance_payment_method": "delivered"}],
-            {"context": context})
+            "sale.advance.payment.inv", "create", [values], {"context": context})
         self.call("sale.advance.payment.inv", "create_invoices", [[wizard_id]],
                   {"context": context})
         created = sorted(set(self._so_invoice_ids(so_id)) - before)
