@@ -376,3 +376,43 @@ def test_truncated_tool_call_is_neutralised_and_flagged(tmp_path):
 
     kinds = [e.get("kind") for e in events(tmp_path)]
     assert "truncated" in kinds, "the model must be told its call was cut off"
+
+
+def test_transient_402_is_retried_but_a_real_one_is_not(monkeypatch):
+    """OpenRouter uses 402 for both "wait your turn" and "you are out of money".
+
+    The in-flight variant is transient — it reserves against each request's maximum
+    possible size, so concurrency alone triggers it, and 11 of 40 C_full dev40 trials died
+    on it. The other variant is terminal, and retrying it is what produced a run of 100
+    silent zero-step trials earlier. They are told apart by message, not status code.
+    """
+    import urllib.error
+
+    import harness.llm as llm_module
+
+    def make_402(detail: str):
+        return urllib.error.HTTPError(
+            "u", 402, "Payment Required", {},
+            __import__("io").BytesIO(detail.encode()))
+
+    transient = ('{"error":{"message":"This request would exceed your available credits '
+                 'given your current in-flight requests. Retry after in-flight requests '
+                 'settle, or add credits.","code":402}}')
+    terminal = ('{"error":{"message":"This request requires more credits, or fewer '
+                'max_tokens.","code":402}}')
+
+    for detail, expected_attempts in ((transient, llm_module.MAX_ATTEMPTS), (terminal, 1)):
+        attempts = {"n": 0}
+
+        def fake_urlopen(request, timeout=None, _d=detail):
+            attempts["n"] += 1
+            raise make_402(_d)
+
+        monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(llm_module.time, "sleep", lambda _s: None)
+        client = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "k")
+        try:
+            client.complete([{"role": "user", "content": "hi"}])
+        except llm_module.LLMError:
+            pass
+        assert attempts["n"] == expected_attempts, (detail[:40], attempts["n"])

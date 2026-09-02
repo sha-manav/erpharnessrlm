@@ -30,6 +30,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+# OpenRouter returns 402 for two very different things, and only one is fatal:
+#   transient — "would exceed your available credits given your current in-flight
+#               requests. Retry after in-flight requests settle" (it reserves against each
+#               request's maximum possible size, so concurrency alone triggers it)
+#   terminal  — "requires more credits, or fewer max_tokens"
+# Retrying the terminal one is what produced a run of 100 silent zero-step trials earlier,
+# so the two are told apart by message rather than by status code.
+TRANSIENT_402 = "in-flight"
 MAX_ATTEMPTS = 5
 BACKOFF_BASE = 2.0
 BACKOFF_CAP = 60.0
@@ -158,7 +167,10 @@ class LLM:
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode(errors="replace")[:300]
                 last_error = f"HTTP {exc.code}: {detail}"
-                if exc.code not in RETRY_STATUS:
+                retryable = exc.code in RETRY_STATUS or (
+                    exc.code == 402 and TRANSIENT_402 in detail
+                )
+                if not retryable:
                     raise LLMError(last_error) from None
             except (OSError, http.client.HTTPException, ValueError) as exc:
                 # OSError deliberately, not just URLError: with several long-running
@@ -172,6 +184,8 @@ class LLM:
                 # Jittered exponential backoff: a whole fleet of trials retrying in step is
                 # how a rate limit becomes an outage.
                 delay = min(BACKOFF_CAP, BACKOFF_BASE ** attempt) * (0.5 + random.random())
+                if "402" in last_error:
+                    delay = max(delay, 30.0)   # waits for other trials' requests to settle
                 if self.logger:
                     self.logger.warning(
                         "llm retry %d/%d in %.1fs: %s", attempt, MAX_ATTEMPTS, delay, last_error
