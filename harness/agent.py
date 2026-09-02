@@ -154,11 +154,21 @@ class ErpAgent(BaseAgent):
                 if status.get("failed"):
                     self.logger.warning("lib modules failed to load: %s", status["failed"])
 
+            system_prompt = self._system_prompt()
+            if self.lib_active:
+                # Say what is actually loaded. The first C_full run produced 31 NameErrors
+                # because the contract named state, db and delegate while the config shipped
+                # none of them: the model followed the instructions it was given.
+                names = ", ".join(sorted(self.lib_active))
+                system_prompt += (
+                    f"\n\n---\n\nAvailable in your Python kernel right now: **{names}**. "
+                    "Nothing else is loaded — do not call modules that are not on this list.")
+
             dispatch = self._make_dispatch(container, kernel)
             agent_loop = Loop(
                 llm=llm,
                 tools=schemas_for(tools),
-                system_prompt=self._system_prompt(),
+                system_prompt=system_prompt,
                 instruction=instruction,
                 run_tool=dispatch,
                 trajectory=trajectory,

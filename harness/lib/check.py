@@ -18,8 +18,11 @@ Two kinds of check:
 
 `hard` checks block `finish`; soft ones are reported.
 
-v0 implements Appendix B items 1, 3, 4 and 7 (drafts, stock non-negative, supplier
-validity, invoicing). Items 2, 5, 6, 8, 9, 10 arrive in P3.5.
+Implements Appendix B items 1, 2, 3, 4, 5, 6 and 7. Items 5 (timeline feasibility) and 6
+(BOM/component feasibility) were promoted out of P3.5 after P1.4 measured them as 74% of
+the stock harness's failures — a finish gate that cannot see them refuses nothing, which is
+exactly what the first C_full run showed: 19 finish calls, 0 refusals. Items 8, 9 and 10
+(duplicates, spend tally, scope containment) remain for P3.5.
 """
 
 from __future__ import annotations
@@ -199,12 +202,195 @@ def _invoicing_complete(client) -> tuple[bool, str]:
     return False, f"{len(problems)} problem(s): {shown}{more}"
 
 
+
+def _timeline_feasible(client) -> tuple[bool, str]:
+    """Appendix B.5 (hard) — every receipt lands before the demand it feeds.
+
+    This is the check the whole harness turns on. On dev40 the stock harness failed 17 of
+    23 coded failures on exactly this relation: plans correct in vendor, quantity and price
+    whose `date_planned` was chosen for convenience and never compared against the
+    customer's `commitment_date`.
+
+    The rule is ERP arithmetic, not benchmark knowledge: a purchase arrives at
+    `date_planned` (Odoo's own promise, itself `order date + supplierinfo.delay`), and a
+    sales order must ship by `commitment_date`. A receipt of a product landing after the
+    last commitment date that needs it covers nothing.
+    """
+    orders = client.search_read(
+        "sale.order", [("state", "=", "sale"), ("commitment_date", "!=", False)],
+        ["name", "commitment_date", "order_line"], limit=200)
+    if not orders:
+        return True, "no confirmed customer orders with a commitment date"
+
+    # Latest date by which each product must be on hand.
+    need_by: dict[int, str] = {}
+    lines = client.search_read(
+        "sale.order.line", [("order_id", "in", [o["id"] for o in orders])],
+        ["order_id", "product_id", "product_uom_qty", "qty_delivered"], limit=500)
+    due = {o["id"]: o["commitment_date"] for o in orders}
+    for line in lines:
+        if not line["product_id"]:
+            continue
+        if (line["product_uom_qty"] or 0) <= (line["qty_delivered"] or 0):
+            continue                      # already shipped; its date no longer constrains
+        product = line["product_id"][0]
+        date = due.get(line["order_id"][0] if line["order_id"] else None)
+        if date and (product not in need_by or date < need_by[product]):
+            need_by[product] = date       # earliest outstanding demand binds
+
+    if not need_by:
+        return True, "every confirmed order line is already delivered"
+
+    late = []
+    po_lines = client.search_read(
+        "purchase.order.line",
+        [("product_id", "in", list(need_by)), ("state", "not in", ("cancel",))],
+        ["order_id", "product_id", "date_planned", "product_qty", "qty_received"], limit=500)
+    for line in po_lines:
+        if (line["qty_received"] or 0) >= (line["product_qty"] or 0):
+            continue                      # already arrived
+        product_id, product_name = line["product_id"]
+        arrives = line["date_planned"]
+        needed = need_by.get(product_id)
+        if arrives and needed and arrives[:10] > needed[:10]:
+            late.append(
+                f"{line['order_id'][1] if line['order_id'] else '?'}: {product_name} "
+                f"arrives {arrives[:10]}, needed {needed[:10]}")
+
+    if late:
+        shown = "; ".join(late[:5])
+        more = f" (+{len(late) - 5} more)" if len(late) > 5 else ""
+        return False, f"{len(late)} receipt(s) land after the demand they feed: {shown}{more}"
+    return True, f"every outstanding receipt lands on or before its need date ({len(need_by)} product(s))"
+
+
+def _mo_feasible(client) -> tuple[bool, str]:
+    """Appendix B.6 (hard) — a manufacturing order's components can actually be there.
+
+    Second-largest failure family for the stock harness (`mo_component_feasibility`,
+    `mo_schedule_compliance`): an MO scheduled before the parts it consumes can arrive.
+    For each unfinished MO, every BOM component must be covered by free stock plus
+    receipts landing before the MO starts.
+    """
+    productions = client.search_read(
+        "mrp.production", [("state", "not in", ("done", "cancel"))],
+        ["name", "product_id", "product_qty", "date_start", "bom_id"], limit=100)
+    if not productions:
+        return True, "no unfinished manufacturing orders"
+
+    on_hand: dict[int, float] = {}
+    for quant in client.search_read(
+            "stock.quant", [("location_id.usage", "=", "internal")],
+            ["product_id", "quantity", "reserved_quantity"], limit=1000):
+        if quant["product_id"]:
+            on_hand[quant["product_id"][0]] = on_hand.get(quant["product_id"][0], 0.0) + (
+                (quant["quantity"] or 0) - (quant["reserved_quantity"] or 0))
+
+    problems = []
+    for production in productions:
+        if not production["bom_id"]:
+            continue
+        bom = client.search_read(
+            "mrp.bom", [("id", "=", production["bom_id"][0])],
+            ["product_qty", "bom_line_ids"], limit=1)
+        if not bom or not bom[0].get("bom_line_ids"):
+            continue
+        batch = bom[0]["product_qty"] or 1.0
+        multiplier = (production["product_qty"] or 0) / batch
+        components = client.call(
+            "mrp.bom.line", "read", [bom[0]["bom_line_ids"]],
+            {"fields": ["product_id", "product_qty"]})
+        start = production["date_start"]
+        for component in components:
+            if not component["product_id"]:
+                continue
+            cid, cname = component["product_id"]
+            required = (component["product_qty"] or 0) * multiplier
+            available = on_hand.get(cid, 0.0)
+            if start:
+                for line in client.search_read(
+                        "purchase.order.line",
+                        [("product_id", "=", cid), ("state", "not in", ("cancel",))],
+                        ["date_planned", "product_qty", "qty_received"], limit=100):
+                    outstanding = (line["product_qty"] or 0) - (line["qty_received"] or 0)
+                    if outstanding > 0 and line["date_planned"] and \
+                            line["date_planned"][:10] <= start[:10]:
+                        available += outstanding
+            if available + 1e-6 < required:
+                problems.append(
+                    f"{production['name']}: needs {required:g} {cname} by "
+                    f"{(start or '?')[:10]}, only {available:g} available")
+
+    if problems:
+        shown = "; ".join(problems[:5])
+        more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
+        return False, f"{len(problems)} component shortfall(s): {shown}{more}"
+    return True, f"every unfinished MO's components are covered ({len(productions)} MO(s))"
+
+
+def _demand_covered(client) -> tuple[bool, str]:
+    """Appendix B.2 (hard) — every confirmed order line has supply behind it.
+
+    Catches the PREMATURE_FINISH pattern: an agent that stops with orders confirmed and
+    nothing bought or built to fill them.
+    """
+    lines = client.search_read(
+        "sale.order.line", [("order_id.state", "=", "sale")],
+        ["order_id", "product_id", "product_uom_qty", "qty_delivered"], limit=500)
+    if not lines:
+        return True, "no confirmed customer order lines"
+
+    shortfalls = []
+    for line in lines:
+        if not line["product_id"]:
+            continue
+        outstanding = (line["product_uom_qty"] or 0) - (line["qty_delivered"] or 0)
+        if outstanding <= 0:
+            continue
+        product_id, product_name = line["product_id"]
+        free = sum(
+            (q["quantity"] or 0) - (q["reserved_quantity"] or 0)
+            for q in client.search_read(
+                "stock.quant",
+                [("product_id", "=", product_id), ("location_id.usage", "=", "internal")],
+                ["quantity", "reserved_quantity"], limit=100))
+        incoming = sum(
+            (p["product_qty"] or 0) - (p["qty_received"] or 0)
+            for p in client.search_read(
+                "purchase.order.line",
+                [("product_id", "=", product_id), ("state", "not in", ("cancel",))],
+                ["product_qty", "qty_received"], limit=100))
+        building = sum(
+            m["product_qty"] or 0
+            for m in client.search_read(
+                "mrp.production",
+                [("product_id", "=", product_id), ("state", "not in", ("done", "cancel"))],
+                ["product_qty"], limit=100))
+        if free + incoming + building + 1e-6 < outstanding:
+            shortfalls.append(
+                f"{line['order_id'][1] if line['order_id'] else '?'}: {product_name} needs "
+                f"{outstanding:g}, have {free:g} free + {incoming:g} incoming + {building:g} building")
+
+    if shortfalls:
+        shown = "; ".join(shortfalls[:5])
+        more = f" (+{len(shortfalls) - 5} more)" if len(shortfalls) > 5 else ""
+        return False, f"{len(shortfalls)} uncovered demand line(s): {shown}{more}"
+    return True, f"every confirmed order line has supply behind it ({len(lines)} line(s))"
+
+
 INVARIANTS: list[Check] = [
     Check("drafts", "no dangling draft documents", True, _no_dangling_drafts),
     Check("stock_non_negative", "stock is non-negative everywhere", True, _stock_non_negative),
     Check("supplier_validity", "PO lines match a vendor offer, MOQ and tier price", True,
           _supplier_validity),
     Check("invoicing", "delivered orders invoiced, invoices posted", True, _invoicing_complete),
+    # The three that address 74% of the stock harness's coded failures. Without them the
+    # gate refused nothing: 19 finish calls, 0 refusals on the first C_full dev40 run.
+    Check("demand_covered", "every confirmed order line has supply behind it", True,
+          _demand_covered),
+    Check("timeline_feasible", "receipts land before the demand they feed", True,
+          _timeline_feasible),
+    Check("mo_feasible", "MO components are available before it starts", True, _mo_feasible),
 ]
 
 

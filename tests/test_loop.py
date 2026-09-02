@@ -142,15 +142,56 @@ def test_varied_calls_do_not_trigger_loop_detection(tmp_path):
 
 
 # -- message construction -----------------------------------------------------
-def test_system_and_instruction_are_cache_marked(tmp_path):
-    loop, _, traj = build(tmp_path, [FakeReply("finish", {"summary": ""})],
-                          run_tool=lambda n, a: FINISH_SENTINEL)
-    loop.run()
-    traj.close()
-    system, user = loop.messages[0], loop.messages[1]
-    for message in (system, user):
-        assert isinstance(message["content"], list)
-        assert message["content"][0]["cache_control"] == {"type": "ephemeral"}
+def test_cache_breakpoint_moves_to_the_end_of_the_transcript():
+    """The breakpoint must move, or only the system block is ever cached.
+
+    Measured on the first C_full dev40 run: cached tokens sat at exactly 3,968 for a whole
+    trajectory while context grew to 17,648 — a 76% -> 22% decay — because the marker never
+    left the system prompt. pi caches 91-98% on the same tasks by marking the *last*
+    conversation message, so the provider re-uses the entire prefix.
+    """
+    from harness.llm import apply_cache_control
+
+    def marked(messages):
+        return [i for i, m in enumerate(messages)
+                if isinstance(m.get("content"), list)
+                and any(isinstance(b, dict) and "cache_control" in b for b in m["content"])]
+
+    transcript = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "U"}]
+    out, _ = apply_cache_control(transcript, None)
+    assert marked(out) == [0, 1]
+
+    transcript += [{"role": "assistant", "content": "A"},
+                   {"role": "tool", "tool_call_id": "1", "content": "RESULT"}]
+    out, _ = apply_cache_control(transcript, None)
+    assert marked(out) == [0, 3], "the marker must follow the end of the conversation"
+
+    # The stored transcript keeps plain content, so breakpoints never accumulate.
+    assert transcript[0]["content"] == "SYS"
+    assert transcript[-1]["content"] == "RESULT"
+
+
+def test_last_tool_definition_is_cache_marked():
+    from harness.llm import apply_cache_control
+
+    _, tools = apply_cache_control(
+        [{"role": "system", "content": "S"}],
+        [{"type": "function", "function": {"name": "a"}},
+         {"type": "function", "function": {"name": "b"}}])
+    assert "cache_control" not in tools[0]
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_an_unmarkable_last_message_falls_back_to_an_earlier_one():
+    """An empty tool result cannot carry a marker; the search continues backwards."""
+    from harness.llm import apply_cache_control
+
+    out, _ = apply_cache_control(
+        [{"role": "system", "content": "S"},
+         {"role": "user", "content": "U"},
+         {"role": "tool", "tool_call_id": "1", "content": ""}], None)
+    assert isinstance(out[1]["content"], list)
+    assert out[2]["content"] == ""
 
 
 def test_transcript_is_append_only(tmp_path):
@@ -169,7 +210,7 @@ def test_step_cap_is_stated_to_the_model(tmp_path):
                           run_tool=lambda n, a: FINISH_SENTINEL, step_cap=42)
     loop.run()
     traj.close()
-    assert "Step cap: 42." in loop.messages[1]["content"][0]["text"]
+    assert "Step cap: 42." in loop.messages[1]["content"]
 
 
 def test_briefing_is_folded_into_the_first_user_message(tmp_path):
@@ -178,7 +219,7 @@ def test_briefing_is_folded_into_the_first_user_message(tmp_path):
                           briefing="stock: 27 units")
     loop.run()
     traj.close()
-    text = loop.messages[1]["content"][0]["text"]
+    text = loop.messages[1]["content"]
     assert "Environment at task start" in text and "stock: 27 units" in text
 
 

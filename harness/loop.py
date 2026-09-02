@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from harness.llm import LLM, LLMError, Usage, mark_cached
+from harness.llm import LLM, LLMError, Usage
 from harness.lib.fmt import PageStore
 
 FINISH_SENTINEL = "__ERP_HARNESS_FINISHED__"
@@ -131,10 +131,11 @@ class Loop:
             first_user = f"{instruction}\n\n## Environment at task start\n\n{briefing}"
         first_user += f"\n\nStep cap: {step_cap}."
 
-        # The two blocks that never change are the two worth caching.
+        # Plain content: breakpoints are placed per request by llm.apply_cache_control,
+        # which must move to the end of the transcript each turn to cache the growing prefix.
         self.messages: list[dict] = [
-            mark_cached({"role": "system", "content": system_prompt}),
-            mark_cached({"role": "user", "content": first_user}),
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": first_user},
         ]
         self.trajectory.write(t=0, role="system", content=system_prompt, tool=None,
                               args=None, output=None, usage=None, latency_s=None)

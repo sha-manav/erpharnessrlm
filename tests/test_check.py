@@ -304,3 +304,132 @@ def test_ungated_finish_never_refuses(erp, tmp_path):
     result = finish_module.finish("no gate", client=erp, gate=False)
     assert finish_module.FINISH_SENTINEL in result
     assert finish_module.refusals() == 0
+
+
+# -- the checks that address the measured failure mode -------------------------
+def test_a_late_receipt_is_detected(erp, offer):
+    """P1.4's dominant failure: a purchase that arrives after the order it feeds.
+
+    17 of 23 stock-harness failures were this relation, and the v0 gate could not see it —
+    19 finish calls, 0 refusals.
+    """
+    from lib import check
+
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "commitment_date": "2026-09-10 12:00:00",
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 5})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 5))],
+                          date_planned="2026-09-25 12:00:00")     # three weeks late
+    erp.confirm_po(po_id)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "timeline_feasible") == "FAIL"
+        evidence = evidence_of(table, "timeline_feasible")
+        assert "2026-09-25" in evidence and "2026-09-10" in evidence
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)
+
+
+def test_an_on_time_receipt_passes(erp, offer):
+    from lib import check
+
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "commitment_date": "2026-10-30 12:00:00",
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 5})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 5))],
+                          date_planned="2026-10-01 12:00:00")     # comfortably early
+    erp.confirm_po(po_id)
+    try:
+        assert status_of(check.invariants(erp), "timeline_feasible") == "pass"
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)
+
+
+def test_uncovered_demand_is_detected(erp, offer):
+    """The PREMATURE_FINISH pattern: orders confirmed, nothing bought or built."""
+    from lib import check
+
+    product_id = offer["product_id"]
+    free = {r["product_id"]: r["free"] for r in erp.stock([product_id])}
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+
+    huge = free.get(product_id, 0) + 5000          # far beyond anything on hand or ordered
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": huge})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "demand_covered") == "FAIL"
+        assert "needs" in evidence_of(table, "demand_covered")
+    finally:
+        erp.cancel("sale.order", so_id)
+
+
+def test_an_mo_without_components_is_detected(erp):
+    """An MO scheduled before its parts can exist — `mo_component_feasibility`."""
+    from lib import check
+
+    boms = erp.boms()
+    if not len(boms):
+        pytest.skip("this scenario has no manufacturing route")
+    bom = boms.all()[0]
+    finished = erp.search_read("mrp.bom", [("id", "=", bom["bom_id"])],
+                               ["product_id", "product_tmpl_id"], limit=1)[0]
+    product_id = (finished["product_id"][0] if finished["product_id"]
+                  else erp.search_read("product.product",
+                                       [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
+                                       ["id"], limit=1)[0]["id"])
+
+    # A quantity far beyond any component stock, starting tomorrow.
+    mo_id = erp.create_mo(product_id, 10_000, date_start="2026-09-03 08:00:00")
+    erp.confirm_mo(mo_id)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "mo_feasible") == "FAIL"
+        assert "needs" in evidence_of(table, "mo_feasible")
+    finally:
+        erp.cancel("mrp.production", mo_id)
+
+
+def test_the_gate_now_refuses_on_a_late_receipt(erp, offer, tmp_path):
+    """End to end: the failure mode that used to pass silently now blocks finish."""
+    from lib import finish as finish_module
+
+    finish_module.SUMMARY_PATH = str(tmp_path / "summary.md")
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id,
+        "commitment_date": "2026-09-10 12:00:00",
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 5})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 5))],
+                          date_planned="2026-09-25 12:00:00")
+    erp.confirm_po(po_id)
+    try:
+        result = finish_module.finish("done", client=erp)
+        assert "finish refused" in result
+        assert "timeline_feasible" in result
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)

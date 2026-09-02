@@ -116,6 +116,7 @@ class LLM:
         }
 
     def _payload(self, messages: list[dict], tools: list[dict] | None) -> dict:
+        messages, tools = apply_cache_control(messages, tools)
         payload: dict[str, Any] = {
             "model": self.spec["model"],
             "messages": messages,
@@ -195,17 +196,63 @@ class LLM:
         raise LLMError(f"giving up after {MAX_ATTEMPTS} attempts: {last_error}")
 
 
-def mark_cached(message: dict) -> dict:
-    """Tag a message so the provider caches its prefix.
+CACHE_CONTROL = {"type": "ephemeral"}
 
-    Caching on these endpoints is explicit, not implicit (NOTES.md ## Models). The system
-    block and the instruction are identical for every step of a trajectory, so marking them
-    turns ~80% of prompt tokens into cache reads at roughly a fifth of the price.
-    """
+
+def _mark(message: dict) -> bool:
+    """Attach a cache breakpoint to a message's text content, in place. True if applied."""
     content = message.get("content")
     if isinstance(content, str):
-        message = dict(message)
+        if not content:
+            return False
         message["content"] = [
-            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": content, "cache_control": CACHE_CONTROL}
         ]
-    return message
+        return True
+    if isinstance(content, list) and content:
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                block["cache_control"] = CACHE_CONTROL
+                return True
+    return False
+
+
+def apply_cache_control(messages: list[dict], tools: list[dict] | None):
+    """Place cache breakpoints the way pi does, which is the way that actually works.
+
+    Measured: marking only the system block caches only the system block. C_full's cached
+    tokens sat at exactly 3,968 for a whole trajectory while its context grew to 17,648, so
+    the hit rate decayed 76% -> 22%. pi, on the same tasks, cached 91-98%, because its
+    breakpoint *moves*: a provider caches everything up to the last breakpoint, so marking
+    the final message re-uses the entire prefix -- every earlier tool result included.
+
+    Copied from pi-mono's `applyAnthropicCacheControl`: the system prompt, the last tool
+    definition, and the last conversation message that will accept a marker.
+
+    Returns copies; the caller's transcript keeps plain string content, so the next turn
+    marks a different message instead of accumulating breakpoints (providers cap them at
+    a handful).
+    """
+    copied = [dict(message) for message in messages]
+    for message in copied:
+        content = message.get("content")
+        if isinstance(content, list):
+            message["content"] = [
+                ({k: v for k, v in block.items() if k != "cache_control"}
+                 if isinstance(block, dict) else block)
+                for block in content
+            ]
+
+    for message in copied:
+        if message.get("role") in ("system", "developer"):
+            _mark(message)
+            break
+
+    for message in reversed(copied):
+        if message.get("role") in ("user", "assistant", "tool") and _mark(message):
+            break
+
+    if tools:
+        tools = [dict(tool) for tool in tools]
+        tools[-1] = {**tools[-1], "cache_control": CACHE_CONTROL}
+    return copied, tools

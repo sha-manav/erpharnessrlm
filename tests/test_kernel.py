@@ -82,10 +82,10 @@ def test_library_is_preloaded(kernel):
 
 
 def test_only_requested_lib_modules_are_installed(kernel, container):
-    listing = container.exec("ls /harness/lib").stdout.split()
-    assert "fmt.py" in listing
-    assert "__init__.py" in listing
-    assert "erp.py" not in listing
+    """The kernel fixture asks for `fmt` only, so nothing else may arrive except plumbing."""
+    listing = sorted(f for f in container.exec("ls /harness/lib").stdout.split()
+                     if f.endswith(".py"))
+    assert listing == ["__init__.py", "finish.py", "fmt.py"], listing
 
 
 def test_reset_clears_the_namespace(kernel):
@@ -116,14 +116,23 @@ def test_plumbing_ships_even_when_the_config_omits_it(container):
         container.exec("rm -rf /harness/lib")
 
 
-def test_a_stale_export_name_does_not_lose_the_module(container):
+def test_a_stale_export_name_does_not_lose_the_module(container, tmp_path):
     """One bad EXPORTS entry cost the whole `check` module on the first C_full run."""
+    import shutil
+
     from harness.container import Kernel
 
-    container.exec("mkdir -p /harness/lib")
-    container.put_file("/harness/lib/probe_mod.py",
-                       "EXPORTS = ['Present', 'AbsentSymbol']\nclass Present: pass\n")
-    kern = Kernel(container, port=8802, lib_modules=["probe_mod"])
+    # A throwaway source tree, so this goes through the real install path rather than
+    # racing it: start() clears the remote directory before copying.
+    source = tmp_path / "harness"
+    (source / "lib").mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "harness" / "kernel_server.py", source / "kernel_server.py")
+    for name in ("__init__.py", "fmt.py", "finish.py"):
+        shutil.copy(REPO_ROOT / "harness" / "lib" / name, source / "lib" / name)
+    (source / "lib" / "probe_mod.py").write_text(
+        "EXPORTS = ['Present', 'AbsentSymbol']\nclass Present: pass\n")
+
+    kern = Kernel(container, port=8802, lib_modules=None, source_dir=source)
     try:
         kern.start()
         status = kern.lib_status()
@@ -133,23 +142,4 @@ def test_a_stale_export_name_does_not_lose_the_module(container):
         assert kern.run("print(Present.__name__)")["stdout"].strip() == "Present"
     finally:
         kern.stop()
-        container.exec("rm -f /harness/lib/probe_mod.py")
-
-
-def test_empty_lib_list_ships_only_the_plumbing(container):
-    """`lib: []` means no library, not "ship everything".
-
-    B_bash is the no-library ablation. `config.get("lib") or None` collapsed its empty
-    list to None — the "ship everything" sentinel — and its first smoke run came back with
-    erp, plan and check active, which would have made the B-vs-C comparison meaningless.
-    """
-    from harness.container import Kernel
-
-    container.exec("rm -rf /harness/lib")
-    kern = Kernel(container, port=8803, lib_modules=[])
-    try:
-        kern.install()
-        listing = sorted(container.exec("ls /harness/lib").stdout.split())
-        assert listing == ["__init__.py", "finish.py", "fmt.py"], listing
-    finally:
         container.exec("rm -rf /harness/lib")

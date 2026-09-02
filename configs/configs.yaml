@@ -24,7 +24,10 @@ defaults:
   # median and below p90, so it bounds the flailing tail — which is where 72% of the
   # spend went — without touching a typical trajectory. Config A is exempt: pi has no
   # such cap, and adding one would break comparability with the published numbers.
-  token_cap: 1500000
+  # Raised from 1.5M: it bound on 9 of 40 C_full trials while the uncapped baseline
+  # averaged 1.20M, so the cap was truncating work the comparison lets pi finish. 3M sits
+  # above config A's eval100 p90 (2.37M) and still bounds a runaway.
+  token_cap: 3000000
   bash_timeout_s: 120
   kernel_timeout_s: 120
   finish_gate: false
@@ -47,14 +50,14 @@ B_bash:
 C_full:
   tools: [python, bash, show, finish]
   prompts: [contract, playbook, schema_card, library_docs]
-  lib: [erp, db, state, check, plan, delegate]
+  lib: [erp, db, state, check, plan]
   briefing: true
   ledger_k: 15
   finish_gate: true
 
 C_minus_dry:
   inherit: C_full
-  lib: [erp, db, plan, delegate]
+  lib: [erp, db, plan]
   finish_gate: false
 
 C_minus_doc:

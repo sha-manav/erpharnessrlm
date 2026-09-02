@@ -27,11 +27,11 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.9 v0 smoke + dev point   | blocked| 2026-09-02 | both dev40 runs INVALID (32.5% and 55% api_error from in-flight 402s); fix shipped; needs ~$100 credit to redo
 
 ## Phase 3 — Harness v1
-- P3.1 lib/db.py              | todo   |            |
-- P3.2 lib/state.py           | todo   |            |
+- P3.1 lib/db.py              | done   | 2026-09-02 | read-only SQL enforced by a Postgres ro_agent role, not by string matching; 5 live tests
+- P3.2 lib/state.py           | done   | 2026-09-02 | CREATE DATABASE TEMPLATE snapshots reachable over RPC, isolated from main; diff/list/drop; 4 live tests
 - P3.3 prompts/briefing.py    | todo   |            |
 - P3.4 lib/delegate.py        | todo   |            |
-- P3.5 Remaining invariants   | todo   |            |
+- P3.5 Remaining invariants   | part   | 2026-09-02 | items 2/5/6 promoted early (74% of failures): demand_covered, timeline_feasible, mo_feasible. Items 8/9/10 remain
 - P3.6 Efficiency audit       | todo   |            |
 - P3.7 Freeze checklist       | todo   |            |
 

@@ -79,6 +79,27 @@ The finish tool, and the gate in front of it (PLAN.md P2.4).
 - `refusals()`
 - `finish(summary='', client=None, gate=True)` — End the episode, if the hard checks agree.
 
+## `db`
+
+Read-only SQL against the task's Odoo database (PLAN.md P3.1).
+
+**class `SqlRefused`** — A statement that is not a read.
+
+**class `Db`**
+- `sql(query, limit=DEFAULT_LIMIT)` — Run a read-only query and return a `Table`.
+- `tables(like=None)` — What tables exist — the SQL counterpart to `erp.fields`.
+- `columns(table)`
+
+## `state`
+
+Database snapshots and the dry-run protocol (PLAN.md P3.2).
+
+**class `State`**
+- `snapshot(name)` — Clone the working database under `name`, replacing any existing clone.
+- `drop(name)`
+- `list()`
+- `diff(a='start', b=None)` — What changed between two databases, per model.
+
 ## `fmt`
 
 Tables and paging — the layer that keeps context from exploding (PLAN.md P2.2).

@@ -15,22 +15,25 @@ check.register(Rule("budget_coral", "Coral Clinics pretax <= 1922",
 
 A constraint you did not write down is a constraint you will forget by step 20.
 
-**2. Investigate read-only, on main.** Use `erp` reads and `db.sql`. Never guess a field
-name — `erp.fields("stock.move", "qty")` tells you what exists. Delegate independent
-investigations (per-vendor sourcing, per-order feasibility) with `delegate("...")`;
-sub-agents can read but not write.
+**2. Investigate read-only, on main.** Use `erp` reads (and `db.sql` if it is listed
+below). Never guess a field name — `erp.fields("stock.move", "qty")` tells you what exists.
 
-**3. Write the plan as a re-runnable function, then rehearse it.**
+**3. Write the plan as a re-runnable function, then rehearse it** (if `state` is listed
+below).
 
 ```python
-def plan_fn(client):  # looks records up by name/domain — never by ids from a dry run
+def plan_fn(client):  # looks records up by name/domain — never by ids from a rehearsal
     ...
 state.snapshot("s1")
 plan_fn(erp.on("s1")); check.all(erp.on("s1"))   # fix and repeat until clean
 ```
 
-**4. Execute on main, verify, then finish.** Run `plan_fn(erp)`, run `check.all()`, confirm
-`state.diff("start", ODOO_DB)` matches the rehearsal, then call `finish(summary)`.
-`finish` refuses while a hard check fails — that refusal is information, not an obstacle.
+Rehearsing is the cheapest way to find a broken plan: `check.all()` on the clone tells you
+whether your receipts land before their due dates and whether your MOs have components,
+before any of it is real.
+
+**4. Execute on main, verify, then finish.** Run `plan_fn(erp)`, run `check.all()`, then
+call `finish(summary)`. `finish` refuses while a hard check fails — that refusal is the
+harness telling you what is still wrong, so read it and fix it rather than retrying.
 
 Prefer one considered plan over many small edits. Every tool result costs context.

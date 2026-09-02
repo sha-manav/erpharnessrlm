@@ -263,7 +263,14 @@ class Kernel:
 
     # -- lifecycle ------------------------------------------------------------
     def install(self) -> None:
-        """Copy the kernel and the configured subset of lib/ into the container."""
+        """Copy the kernel and the configured subset of lib/ into the container.
+
+        The directory is cleared first. Copying over a previous install leaves modules the
+        current config did not ask for, so an ablation would silently inherit whatever ran
+        before it in the same container — the same class of error as `lib: []` collapsing
+        to "ship everything".
+        """
+        self.container.exec(f"rm -rf {self.REMOTE_DIR}/lib")
         self.container.exec(f"mkdir -p {self.REMOTE_DIR}/lib")
         self.container.put_file(
             self.REMOTE_SERVER, (self.source_dir / "kernel_server.py").read_bytes()
