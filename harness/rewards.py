@@ -50,6 +50,10 @@ def failed_rule_names(raw: dict, limit: int | None = None) -> list[str]:
     names: list[str] = []
     for dimension, rules in by_dimension.items():
         for rule in rules if isinstance(rules, list) else []:
-            if rule.get("status") == "FAIL" or rule.get("passed") is False:
+            # `passed: False` is also set on rules that do not apply to this end state, so
+            # matching on it alone over-reports: two dev40 tasks looked like they had
+            # failing rules while the verifier counted `rules.failed == 0`. FAIL plus
+            # applicable is the verifier's own definition.
+            if rule.get("status") == "FAIL" and rule.get("applicable") is not False:
                 names.append(f"{dimension}: {rule.get('expr') or rule.get('rule')}")
     return names[:limit] if limit else names

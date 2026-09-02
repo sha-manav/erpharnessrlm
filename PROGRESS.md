@@ -13,7 +13,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P1.1 Select eval100 and dev | done   | 2026-08-31 | eval100 frozen: 100 ids, 29 patterns, 3-4 each; dev 200 / dev40 / dev10 / dev5; guard armed; tag eval100-frozen
 - P1.2 Config A on eval100    | done   | 2026-09-01 | big 100/100 (3 fp8-only batches); small stopped at 67/100 (0 passes, floor result)
 - P1.3 Ingest + leaderboard   | done   | 2026-09-01 | GLM-5.1 39.0 vs 35.8 published (+3.2, within +/-8); analysis/reproduction.md
-- P1.4 Stock failure analysis | todo   |            |
+- P1.4 Stock failure analysis | done   | 2026-09-02 | dev40 A_pi 42.5% pass, 23 failures coded: 17 TIMELINE, 2 PREMATURE_FINISH, 2 SUBOPTIMAL (8.7%, below the 40% trigger), 1 MISSING_DOC, 1 OVERSPEND
 
 ## Phase 2 — Harness v0
 - P2.1 Kernel                 | done   | 2026-09-01 | TCP kernel in-container + host client; persistent namespaces, timeout rebuild, lib preload; 9 live tests
@@ -23,7 +23,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.5 lib/plan.py            | done   | 2026-09-01 | ledger with bounded summary for reinjection; 9 unit tests
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
 - P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
-- P2.8 agent.py (Harbor)      | todo   |            |
+- P2.8 agent.py (Harbor)      | doing  | 2026-09-02 | implemented; smoke found 4 bugs (lib plumbing, check EXPORTS, connection resets, max_tokens truncation); 4th smoke running
 - P2.9 v0 smoke + dev point   | todo   |            |
 
 ## Phase 3 — Harness v1

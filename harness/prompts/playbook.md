@@ -40,14 +40,18 @@ Enumerate every feasible option for each shortage before choosing one:
 * buy from each vendor that lists the product, at each `min_qty` tier;
 * make it, if a BOM exists — then recurse onto its components.
 
-For each option compute **total landed cost** and the **earliest completion date**
-(`order date + supplierinfo.delay` for a purchase; component availability plus build time
-for a manufacture). Compare every option against every due date, write the comparison as a
-table, and only then act. Cheapest-per-unit is not cheapest overall once minimum
-quantities, tier prices and lead times are in.
+For each option compute the **earliest completion date** first — `order date +
+supplierinfo.delay` for a purchase; component arrival plus build time for a manufacture —
+and only then the **total landed cost**. Compare every option's completion date against
+every due date it is meant to cover, write the comparison as a table, and only then act.
 
-`ortools` and `pulp` are installable if a comparison is genuinely combinatorial:
-`pip3 install --break-system-packages ortools`.
+Dates are where these plans go wrong. A plan that is correct in vendor, quantity and price
+but whose receipt lands one day after the commitment date covers nothing. Check, for every
+demand: does what I ordered arrive before it is needed, and are an MO's components on hand
+or on a receipt landing before the MO starts?
+
+Cheapest-per-unit is not cheapest overall once minimum quantities and tier prices are in,
+but a cheap infeasible plan scores nothing at all.
 
 ## Data model
 

@@ -788,7 +788,36 @@ An unknown wizard raises an `OdooError` naming the model rather than guessing a 
 
 ## Dev curve decisions
 
-*(Phase 3)*
+### P1.4 (2026-09-02) — what the stock harness actually fails at
+
+Config A on dev40: **42.5% pass@1**, mean reward 55.3, 29.2 steps, $0.656/task, all 40
+terminating cleanly. 23 failures coded from the verifier's per-rule flags plus our own
+trajectories (`analysis/failures_stock_big.md`).
+
+| code | n | share |
+|---|---:|---:|
+| TIMELINE | **17** | 74% |
+| PREMATURE_FINISH | 2 | 9% |
+| SUBOPTIMAL | 2 | 9% |
+| MISSING_DOC | 1 | 4% |
+| OVERSPEND | 1 | 4% |
+| SUPPLIER / DRAFT / BOM_MATH / API_ERR / TOOL_LOOP / STEP_CAP / SCOPE | 0 | — |
+
+**Zero Odoo-mechanics failures.** The stock harness can drive Odoo; what it cannot do is
+check that a plan's dates work before committing to them. `supply_timing_feasible` (18
+tasks), `mo_schedule_compliance` (13), `po_delivery_schedule_compliance` (11) and
+`mo_component_feasibility` (11) are the rule families involved.
+
+Two decisions PLAN.md ties to this measurement:
+
+* **No cost-planning section, no preinstalled solver.** SUBOPTIMAL is 8.7%, against PLAN's
+  40% trigger. Counter-intuitive, because 183 of the 300 tasks carry a `min_new_spend`
+  objective — but only two dev failures ever produced a valid end state whose sole fault
+  was cost. The other 21 never reached a feasible plan to optimise. The playbook's planning
+  text is retargeted at *feasibility* (earliest completion date first, then landed cost).
+* **Phase 3 order is re-ranked** in `analysis/build_order.md`: invariants 5+6 (timeline,
+  BOM arithmetic) first, then state snapshots + dry run, then the briefing. `db.py` and
+  `delegate` address no observed failure and move last.
 
 ## Freeze
 
