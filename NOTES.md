@@ -879,6 +879,24 @@ dev5, N=3, three trials scored before the run finished: 2 passes at 100.0, one f
   buy. `state.rehearse(plan_fn)` does snapshot → run → `check.all()` → drop in one call.
   Refusal messages point at these.
 
+## Checkpoint pass 2 (2026-09-02) — routing, timeline and helpers in; force-hole found
+
+**3/5 pass, mean reward 68.7, $0.49/task, cache 76–80% on every trial** (bar 60%; pass 1 was
+29%). 2017 (pass-1 wishful-date failure) now 100; 2024 (down-payment pattern, killed by a
+body-level 504 in pass 1) now 100 with `erp.invoice(so, "percentage", …)`; 2035 100.
+
+Both failures — 2004 (21.0) and 2014 (22.7) — are one hole: the write-time guard refused an
+early `receive()`, the model wrote "try force=True and see what the checks say", and the
+checks said nothing. Its reasoning: a PO arriving 9/9 before a 9/11 due date is "genuinely
+due" — *will arrive in time* conflated with *has arrived*. These trials uploaded their
+library before the fix landed, so pass 2 cannot show it.
+
+Fix: `no_fabricated_receipts` (hard) — a done incoming picking dated before order date +
+the vendor's lead time is refused at finish; the guard message now says a PO arriving
+before the due date already covers that demand and the delivery should stay pending.
+Pass 3 tests it; early signal: 2035 finished at 100 after the check surfaced in three
+rehearsals, and 2004 has not touched `force` at all.
+
 ## Freeze
 
 *(P3.7)*
