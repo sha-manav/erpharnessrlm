@@ -134,3 +134,22 @@ def test_a_stale_export_name_does_not_lose_the_module(container):
     finally:
         kern.stop()
         container.exec("rm -f /harness/lib/probe_mod.py")
+
+
+def test_empty_lib_list_ships_only_the_plumbing(container):
+    """`lib: []` means no library, not "ship everything".
+
+    B_bash is the no-library ablation. `config.get("lib") or None` collapsed its empty
+    list to None — the "ship everything" sentinel — and its first smoke run came back with
+    erp, plan and check active, which would have made the B-vs-C comparison meaningless.
+    """
+    from harness.container import Kernel
+
+    container.exec("rm -rf /harness/lib")
+    kern = Kernel(container, port=8803, lib_modules=[])
+    try:
+        kern.install()
+        listing = sorted(container.exec("ls /harness/lib").stdout.split())
+        assert listing == ["__init__.py", "finish.py", "fmt.py"], listing
+    finally:
+        container.exec("rm -rf /harness/lib")

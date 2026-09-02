@@ -142,7 +142,12 @@ class ErpAgent(BaseAgent):
             tools = self.config.get("tools", ["python", "bash", "show", "finish"])
             kernel_needed = "python" in tools or "finish" in tools
             if kernel_needed:
-                kernel = Kernel(container, lib_modules=self.config.get("lib") or None)
+                # `[] or None` is None, and None means "ship everything" -- which handed
+                # B_bash (defined with lib: []) the full library and quietly turned the
+                # no-library ablation into C_full-without-prompts. Distinguish an absent
+                # key from an empty list.
+                lib_modules = self.config["lib"] if "lib" in self.config else None
+                kernel = Kernel(container, lib_modules=lib_modules)
                 kernel.start(env=CONTAINER_ENV)
                 status = kernel.lib_status()
                 self.lib_active = status.get("loaded", [])
