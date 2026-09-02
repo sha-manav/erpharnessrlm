@@ -20,8 +20,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import check as check_module
-
 EXPORTS = ["finish", "FINISH_SENTINEL"]
 
 FINISH_SENTINEL = "__ERP_HARNESS_FINISHED__"
@@ -58,9 +56,20 @@ def finish(summary: str = "", client=None, gate: bool = True) -> str:
     Returns either the refusal text (episode continues) or a string containing
     `FINISH_SENTINEL`, which the loop treats as terminal.
     """
-    table = check_module.all(client)
-    checks_text = str(table)
-    failing = [row for row in table.all() if row["status"] == "FAIL" and row["hard"] == "hard"]
+    # `check` is ablatable (C_minus_dry ships without it), so it is imported here rather
+    # than at module load: no checks simply means no gate, not a broken finish tool.
+    try:
+        from . import check as check_module
+    except ImportError:
+        check_module = None
+
+    if check_module is None:
+        checks_text = "(no checks in this configuration)"
+        failing = []
+    else:
+        table = check_module.all(client)
+        checks_text = str(table)
+        failing = [r for r in table.all() if r["status"] == "FAIL" and r["hard"] == "hard"]
 
     if gate and failing and _state["refusals"] < MAX_REFUSALS - 1:
         _state["refusals"] += 1

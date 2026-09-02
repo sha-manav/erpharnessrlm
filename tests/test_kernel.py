@@ -94,3 +94,23 @@ def test_reset_clears_the_namespace(kernel):
     result = kernel.run("print(throwaway)", ns="resettable")
     assert result["ok"] is False
     assert "NameError" in result["stderr"]
+
+
+def test_plumbing_ships_even_when_the_config_omits_it(container):
+    """A config's `lib` list names primitives under test, not the plumbing they need.
+
+    C_full asks for [erp, db, state, check, plan, delegate] and mentions neither `fmt`
+    nor `finish` — but erp.py imports Table from fmt, and the finish tool imports finish.
+    Shipping the list verbatim would upload a library that cannot import itself.
+    """
+    from harness.container import Kernel
+
+    kern = Kernel(container, port=8801, lib_modules=["erp", "check", "plan"])
+    try:
+        kern.install()
+        listing = container.exec("ls /harness/lib").stdout.split()
+        assert "fmt.py" in listing, "fmt is required by erp.py"
+        assert "finish.py" in listing, "finish is how an episode ends"
+        assert "erp.py" in listing and "check.py" in listing and "plan.py" in listing
+    finally:
+        container.exec("rm -rf /harness/lib")

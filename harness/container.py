@@ -241,6 +241,13 @@ class Kernel:
     REMOTE_DIR = "/harness"
     REMOTE_SERVER = f"{REMOTE_DIR}/kernel_server.py"
 
+    # Infrastructure, not ablatable primitives: `fmt` provides the Table every read
+    # returns and the paging every tool output relies on, and `finish` is how an episode
+    # ends. A config's `lib` list names the primitives under test (erp, check, state,
+    # delegate...), so shipping only that list would send erp.py without the fmt it
+    # imports -- a library that cannot load at all.
+    ALWAYS = ("fmt", "finish")
+
     def __init__(
         self,
         container: Container,
@@ -265,7 +272,8 @@ class Kernel:
         wanted = self.lib_modules
         for path in sorted(lib_dir.glob("*.py")):
             # __init__ always ships; it discovers whichever modules arrived.
-            if path.stem != "__init__" and wanted is not None and path.stem not in wanted:
+            if (path.stem != "__init__" and path.stem not in self.ALWAYS
+                    and wanted is not None and path.stem not in wanted):
                 continue
             self.container.put_file(f"{self.REMOTE_DIR}/lib/{path.name}", path.read_bytes())
 
