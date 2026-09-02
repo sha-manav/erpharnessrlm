@@ -176,17 +176,34 @@ class State:
         """
         from .erp import erp
         from . import check as check_module
+        from .fmt import Table
 
         self.snapshot(name)
         client = erp.on(name)
+        main_writes_before = len(erp.write_log)
         try:
             plan_fn(client)
-            return check_module.all(client)
+            table = check_module.all(client)
         finally:
             try:
                 self.drop(name)
             except Exception:   # noqa: BLE001 - a leftover clone is not worth failing over
                 pass
+
+        # The likely mistake: a plan_fn that ignores `client` and calls the global `erp`
+        # inside. That mutates the real database during what was meant to be a rehearsal.
+        # It cannot be undone here, so it is reported as a hard failure in the returned
+        # table -- the one place the agent is guaranteed to look.
+        leaked = len(erp.write_log) - main_writes_before
+        if leaked:
+            rows = table.all() + [{
+                "check": "rehearsal_isolation", "hard": "hard", "status": "FAIL",
+                "evidence": (f"plan_fn made {leaked} write(s) to the MAIN database during the "
+                             "rehearsal: it must use the `client` argument for every call, "
+                             "not `erp`. Those writes are real; review them before continuing."),
+            }]
+            table = Table(rows, ["check", "hard", "status", "evidence"], "checks", max_rows=60)
+        return table
 
 
 state = State()

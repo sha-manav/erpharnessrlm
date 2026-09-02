@@ -151,3 +151,19 @@ print('clone dropped:', 'rehearsal' not in [r['database'] for r in state.list().
     assert "rows: True" in out
     assert "main unchanged: True" in out
     assert "clone dropped: True" in out
+
+
+def test_rehearse_flags_a_plan_that_writes_to_main(kernel):
+    """The likely mistake: plan_fn ignores `client` and calls the global `erp`."""
+    out = run(kernel, """
+def leaky_plan(client):
+    o = erp.suppliers().all()[0]                       # uses erp, not client
+    po = erp.create_po(o['vendor_id'], [(o['product_id'], max(o['min_qty'], 1))],
+                       date_planned='2026-12-01 08:00:00')
+    erp.cancel('purchase.order', po)                   # tidy, but the write happened
+table = state.rehearse(leaky_plan)
+row = next(r for r in table.all() if r['check'] == 'rehearsal_isolation')
+print(row['status'], '|', row['evidence'][:60])
+""", timeout=240)
+    assert out.startswith("FAIL"), out
+    assert "MAIN database" in out
