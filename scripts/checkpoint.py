@@ -57,7 +57,7 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
     # day 0, and writing a date_planned the vendor's lead time cannot meet. Both are now
     # refused by timeline_feasible; counting the *attempts* shows whether the playbook
     # change stopped the behaviour or only the gate is catching it.
-    early_receives = wishful_dates = 0
+    early_receives = wishful_dates = rehearsal_fails = 0
     post_refusal: list[tuple[str, int, list[str]]] = []
 
     for result, events in trials:
@@ -72,6 +72,8 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
                 early_receives += 1
             if "lead time" in out and "makes it" in out:
                 wishful_dates += 1
+            if event.get("tool") == "python" and "rehearse" in code and "  FAIL  " in out:
+                rehearsal_fails += 1
             if event.get("tool") == "finish" and "finish refused" in out:
                 refusals += 1
                 # Resolved if a later finish in the same trial carried the sentinel.
@@ -94,8 +96,12 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
     print()
     checks = [
         ("cache hit rate", f"{cache_pct:.0f}%", cache_pct >= CRITERIA["cache_pct"], f">= {CRITERIA['cache_pct']:.0f}%"),
-        ("refusals", f"{refusals} ({resolved} resolved)",
-         refusals >= CRITERIA["min_refusals"] and resolved == refusals, ">= 1, all resolved"),
+        # The gate is exercised either at finish (a refusal) or, since rehearsals landed,
+        # earlier: a FAIL row in a rehearsal table that the plan then cleared. make7 had
+        # zero refusals and five passes because every plan was clean before finish.
+        ("gate exercised", f"{refusals} refusal(s) ({resolved} resolved), {rehearsal_fails} rehearsal FAIL(s)",
+         (refusals + rehearsal_fails) >= CRITERIA["min_refusals"] and resolved == refusals,
+         ">= 1 refusal or rehearsal FAIL; refusals all resolved"),
         ("NameErrors", str(name_errors), name_errors == CRITERIA["name_errors"], "== 0"),
         ("api_errors/crashes", str(api_errors), api_errors == CRITERIA["api_errors"], "== 0"),
         ("transport failures", str(transport), transport == 0, "== 0 (informational)"),
@@ -105,7 +111,7 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
     all_ok = True
     for label, value, ok, bar in checks:
         mark = "PASS" if ok else "FAIL"
-        if label in ("cache hit rate", "refusals", "NameErrors", "api_errors/crashes"):
+        if label in ("cache hit rate", "gate exercised", "NameErrors", "api_errors/crashes"):
             all_ok &= ok
         print(f"  [{mark}] {label:<20} {value:<18} bar {bar}")
 
