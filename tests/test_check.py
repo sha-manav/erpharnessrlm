@@ -34,6 +34,21 @@ def erp(dev_container_name):
     return Erp(db="bench", url=f"http://127.0.0.1:{port}", user="admin", password=key)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def no_leftover_orders(erp):
+    """Cancel confirmed orders other test modules left behind.
+
+    Several checks report "the first N problems"; a leftover order from test_erp or the
+    plumbing test can push this module's own seeded violation out of the shown list.
+    """
+    for po in erp.search_read("purchase.order", [("state", "=", "purchase")], ["id"], limit=100):
+        erp.cancel("purchase.order", po["id"])
+    for so in erp.search_read("sale.order", [("state", "=", "sale")], ["id"], limit=100):
+        erp.cancel("sale.order", so["id"])
+    for mo in erp.search_read("mrp.production", [("state", "not in", ("done", "cancel"))], ["id"], limit=100):
+        erp.cancel("mrp.production", mo["id"])
+
+
 @pytest.fixture(autouse=True)
 def clean_registry():
     from lib import check, finish
@@ -456,3 +471,42 @@ def test_preexisting_failures_are_reported_but_do_not_block(erp, offer, tmp_path
     check.register(Rule("fresh", "caused by the agent", lambda c: (False, "new")))
     result = finish_module.finish("done", client=erp)
     assert "finish refused" in result and "fresh" in result
+
+
+def test_an_optimistic_planned_date_does_not_fool_the_timeline_check(erp, offer):
+    """The agent can write any date_planned it likes; the vendor still needs its lead time.
+
+    First checkpoint run: a trial failed the benchmark's supply_timing rule while this
+    check reported nothing, because it trusted the written date. Arrival is the later of
+    date_planned and order date + supplierinfo.delay.
+    """
+    from lib import check
+
+    offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
+    if not offers:
+        pytest.skip("no vendor with a lead time of 3+ days in this scenario")
+    o = offers[0]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+
+    # Due tomorrow; the vendor needs delay_days; the agent writes date_planned = today.
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    due = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    wishful = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": due,
+        "order_line": [(0, 0, {"product_id": o["product_id"], "product_uom_qty": 5})]}])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    po_id = erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 5))],
+                          date_planned=wishful)
+    erp.confirm_po(po_id)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "timeline_feasible") == "FAIL"
+        evidence = evidence_of(table, "timeline_feasible")
+        assert "lead time" in evidence, evidence
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)

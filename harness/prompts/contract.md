@@ -36,4 +36,8 @@ before any of it is real.
 call `finish(summary)`. `finish` refuses while a hard check fails — that refusal is the
 harness telling you what is still wrong, so read it and fix it rather than retrying.
 
+Two things the checks will hold you to: a purchase arrives at order date + the vendor's
+lead time whatever `date_planned` says, and only goods on hand can be delivered. Confirm
+orders; do not receive goods that have not had time to arrive.
+
 Prefer one considered plan over many small edits. Every tool result costs context.

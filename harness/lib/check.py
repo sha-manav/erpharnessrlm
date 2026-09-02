@@ -203,6 +203,31 @@ def _invoicing_complete(client) -> tuple[bool, str]:
 
 
 
+def _add_days(stamp: str, days: float) -> str:
+    """'YYYY-MM-DD HH:MM:SS' + days, as the same kind of string."""
+    from datetime import datetime, timedelta
+
+    base = datetime.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")
+    return (base + timedelta(days=float(days))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _vendor_delay(client, vendor_id, product_id):
+    """The vendor's lead time in days for this product, or None if it does not list it."""
+    if not vendor_id or not product_id:
+        return None
+    template = client.search_read(
+        "product.product", [("id", "=", product_id)], ["product_tmpl_id"], limit=1)
+    template_id = template[0]["product_tmpl_id"][0] if template else None
+    offers = client.search_read(
+        "product.supplierinfo",
+        ["&", ("partner_id", "=", vendor_id),
+         "|", ("product_id", "=", product_id), ("product_tmpl_id", "=", template_id)],
+        ["delay"], limit=10)
+    if not offers:
+        return None
+    return max(o["delay"] or 0 for o in offers)
+
+
 def _timeline_feasible(client) -> tuple[bool, str]:
     """Appendix B.5 (hard) — every receipt lands before the demand it feeds.
 
@@ -246,16 +271,40 @@ def _timeline_feasible(client) -> tuple[bool, str]:
         "purchase.order.line",
         [("product_id", "in", list(need_by)), ("state", "not in", ("cancel",))],
         ["order_id", "product_id", "date_planned", "product_qty", "qty_received"], limit=500)
+    order_ids = sorted({l["order_id"][0] for l in po_lines if l["order_id"]})
+    orders = {o["id"]: o for o in client.search_read(
+        "purchase.order", [("id", "in", order_ids)], ["name", "partner_id", "date_order"],
+        limit=500)} if order_ids else {}
     for line in po_lines:
-        if (line["qty_received"] or 0) >= (line["product_qty"] or 0):
-            continue                      # already arrived
+        # A received line is NOT exempt. The agent can validate a receipt the moment it
+        # confirms the order -- Odoo lets it -- but goods with a 19-day lead time did not
+        # arrive on day 0. Receiving early fabricates stock; the lead-time floor still
+        # applies. (The trial that exposed this had "confirmed PO and received goods" in
+        # its own plan, seven days ahead of a vendor that needed nineteen.)
         product_id, product_name = line["product_id"]
-        arrives = line["date_planned"]
+        order = orders.get(line["order_id"][0]) if line["order_id"] else None
         needed = need_by.get(product_id)
-        if arrives and needed and arrives[:10] > needed[:10]:
-            late.append(
-                f"{line['order_id'][1] if line['order_id'] else '?'}: {product_name} "
-                f"arrives {arrives[:10]}, needed {needed[:10]}")
+        if not order or not needed:
+            continue
+        # The date the agent WROTE is not evidence of when goods arrive: Odoo stores any
+        # date_planned you give it. The vendor delivers at order date + its lead time, so
+        # a planned date earlier than that is wishful, and the later of the two is the
+        # honest arrival. The first checkpoint run produced a trial that failed the
+        # benchmark's timing rule while this check reported nothing, for exactly that
+        # reason (Appendix A: receipt date = order date + supplierinfo.delay).
+        arrives = line["date_planned"] or ""
+        delay = _vendor_delay(client, order["partner_id"][0] if order["partner_id"] else None,
+                              product_id)
+        if order.get("date_order") and delay is not None:
+            earliest = _add_days(order["date_order"], delay)
+            if earliest > arrives:
+                arrives = earliest
+        if arrives and arrives[:10] > needed[:10]:
+            reason = (f"planned {line['date_planned'][:10]}, vendor lead time {delay}d from "
+                      f"{order['date_order'][:10]} makes it {arrives[:10]}"
+                      if delay is not None and arrives != (line["date_planned"] or "")
+                      else f"arrives {arrives[:10]}")
+            late.append(f"{order['name']}: {product_name} {reason}, needed {needed[:10]}")
 
     if late:
         shown = "; ".join(late[:5])
@@ -315,10 +364,20 @@ def _mo_feasible(client) -> tuple[bool, str]:
                 for line in client.search_read(
                         "purchase.order.line",
                         [("product_id", "=", cid), ("state", "not in", ("cancel",))],
-                        ["date_planned", "product_qty", "qty_received"], limit=100):
+                        ["date_planned", "product_qty", "qty_received", "order_id"], limit=100):
                     outstanding = (line["product_qty"] or 0) - (line["qty_received"] or 0)
-                    if outstanding > 0 and line["date_planned"] and \
-                            line["date_planned"][:10] <= start[:10]:
+                    if outstanding <= 0 or not line["date_planned"]:
+                        continue
+                    arrives = line["date_planned"]
+                    po = client.search_read(
+                        "purchase.order", [("id", "=", line["order_id"][0])],
+                        ["partner_id", "date_order"], limit=1) if line.get("order_id") else []
+                    if po and po[0].get("date_order") and po[0]["partner_id"]:
+                        delay = _vendor_delay(client, po[0]["partner_id"][0], cid)
+                        if delay is not None:
+                            earliest = _add_days(po[0]["date_order"], delay)
+                            arrives = max(arrives, earliest)
+                    if arrives[:10] <= start[:10]:
                         available += outstanding
             if available + 1e-6 < required:
                 problems.append(

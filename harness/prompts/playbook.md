@@ -7,13 +7,22 @@ not guidance about any particular task.
 
 **Purchasing.** Create the order with lines carrying `price_unit` *and* `date_planned`
 (Odoo's onchange defaults do not fire over RPC — an omitted price silently becomes 0.00),
-then `button_confirm`, then validate the receipt picking.
+then `button_confirm`. **Do not validate the receipt.** Goods arrive at
+`order date + supplierinfo.delay`, not when you click; a receipt validated today for a
+vendor with a 19-day lead time fabricates stock that does not exist, and the plan fails on
+timing however correct everything else is. `date_planned` must be on or after that
+arrival date *and* on or before the customer due date it serves — if no vendor can meet
+both, say so in the summary rather than inventing a date.
 
 ```python
-po = erp.create_po(vendor_id, [(product_id, qty)], date_planned="2026-09-08 08:00:00",
-                   origin="S00030")           # price looked up from supplierinfo
-erp.confirm_po(po); erp.receive(po)
+po = erp.create_po(vendor_id, [(product_id, qty)],
+                   date_planned="2026-09-21 08:00:00",   # >= order date + delay
+                   origin="S00030")                       # price looked up from supplierinfo
+erp.confirm_po(po)                                       # leave it confirmed; no receive()
 ```
+
+`erp.receive(po)` exists for goods that are genuinely due — a receipt whose planned date
+has passed — not for closing the loop early.
 
 **Manufacturing.** Create the MO, confirm, then produce. `erp.produce` reserves, sets
 `qty_producing`, **writes the component consumption explicitly** and marks done — without
@@ -24,8 +33,11 @@ mo = erp.create_mo(product_id, qty, date_start="2026-09-05 08:00:00")
 erp.confirm_mo(mo); erp.produce(mo)
 ```
 
-**Sales.** Confirm, deliver, invoice, post. An order that is delivered but not invoiced,
-or invoiced but left in draft, is unfinished work.
+**Sales.** Confirm, and set `commitment_date`. Deliver **only what is on hand now** —
+a delivery draws from stock, and stock that is still on a purchase order is not on hand.
+Invoice what you delivered and post it; an order delivered but not invoiced, or invoiced
+but left in draft, is unfinished work. Orders waiting on incoming goods stay confirmed
+with their delivery pending.
 
 ```python
 erp.call("sale.order", "action_confirm", [[so_id]])
