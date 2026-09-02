@@ -53,6 +53,11 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
     refusals = resolved = name_errors = 0
     api_errors = sum(1 for r, _ in trials if r["terminal_reason"] in ("api_error", "crash"))
     transport = 0
+    # Added before pass 2 ran, after pass 1 exposed them: the agent validating receipts on
+    # day 0, and writing a date_planned the vendor's lead time cannot meet. Both are now
+    # refused by timeline_feasible; counting the *attempts* shows whether the playbook
+    # change stopped the behaviour or only the gate is catching it.
+    early_receives = wishful_dates = 0
     post_refusal: list[tuple[str, int, list[str]]] = []
 
     for result, events in trials:
@@ -62,6 +67,11 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
             name_errors += len(re.findall(r"NameError: name '\w+' is not defined", out))
             if "kernel transport failed" in out or "Docker compose cp" in out:
                 transport += 1
+            code = (event.get("args") or {}).get("code") or ""
+            if "receive(" in code and "erp.receive" in code:
+                early_receives += 1
+            if "lead time" in out and "makes it" in out:
+                wishful_dates += 1
             if event.get("tool") == "finish" and "finish refused" in out:
                 refusals += 1
                 # Resolved if a later finish in the same trial carried the sentinel.
@@ -89,11 +99,13 @@ def score(run_dir: Path, show_turns: int = 2) -> bool:
         ("NameErrors", str(name_errors), name_errors == CRITERIA["name_errors"], "== 0"),
         ("api_errors/crashes", str(api_errors), api_errors == CRITERIA["api_errors"], "== 0"),
         ("transport failures", str(transport), transport == 0, "== 0 (informational)"),
+        ("early receive() calls", str(early_receives), True, "informational: playbook now says don't"),
+        ("wishful date_planned caught", str(wishful_dates), True, "informational: gate now sees it"),
     ]
     all_ok = True
     for label, value, ok, bar in checks:
         mark = "PASS" if ok else "FAIL"
-        if label != "transport failures":
+        if label in ("cache hit rate", "refusals", "NameErrors", "api_errors/crashes"):
             all_ok &= ok
         print(f"  [{mark}] {label:<20} {value:<18} bar {bar}")
 
