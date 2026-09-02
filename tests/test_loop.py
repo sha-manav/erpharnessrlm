@@ -349,3 +349,30 @@ def test_connection_reset_is_retried_not_fatal(tmp_path, monkeypatch):
     reply = client.complete([{"role": "user", "content": "hi"}])
     assert reply.text == "ok"
     assert attempts["n"] == 3          # two resets absorbed, third attempt succeeded
+
+
+def test_truncated_tool_call_is_neutralised_and_flagged(tmp_path):
+    """A call cut off by max_tokens leaves half-written JSON in `arguments`.
+
+    Echoing it back is rejected outright — HTTP 400 "Invalid
+    tool_calls.function.arguments value, expected JSON" — which ends the trajectory over
+    one bad turn. Observed live on GLM-5.1 via Chutes with max_tokens 4096.
+    """
+    reply = FakeReply("python", {"code": "x"})
+    reply.message["tool_calls"] = [{
+        "id": "cut", "type": "function",
+        "function": {"name": "python", "arguments": '{"code": "erp.create_po(8, [(2, 24'},
+    }]
+    reply.finish_reason = "length"
+
+    loop, _, traj = build(tmp_path, [reply], step_cap=1)
+    loop.run()
+    traj.close()
+
+    echoed = [m for m in loop.messages if m.get("role") == "assistant"][0]
+    arguments = echoed["tool_calls"][0]["function"]["arguments"]
+    json.loads(arguments)                      # the echo is valid whatever the model sent
+    assert arguments == "{}"
+
+    kinds = [e.get("kind") for e in events(tmp_path)]
+    assert "truncated" in kinds, "the model must be told its call was cut off"

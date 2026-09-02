@@ -29,7 +29,12 @@ big:
   model: z-ai/glm-5.1
   pi_model: openrouter/z-ai/glm-5.1
   temperature: null
-  max_tokens: 4096
+  # 4096 truncated the model mid-tool-call: a `python` call carrying a plan function is
+  # easily longer than that, and a cut-off call leaves unparseable JSON in
+  # tool_calls.function.arguments, which the provider rejects with HTTP 400 and the
+  # trajectory dies. pi sets no max_tokens at all (provider default), so a generous value
+  # is also the closer match to the baseline.
+  max_tokens: 16384
   supports_prompt_cache: null      # measured in P0.4
   pricing_per_mtok: {input: 0.966, cached_input: null, output: 3.036}
   leaderboard_pass_at_1: 35.8      # published coding-mode number for GLM-5.1
@@ -43,7 +48,7 @@ small:
   model: qwen/qwen3-32b
   pi_model: openrouter/qwen/qwen3-32b
   temperature: null
-  max_tokens: 4096
+  max_tokens: 16384
   supports_prompt_cache: null
   pricing_per_mtok: {input: 0.08, cached_input: null, output: 0.28}
   leaderboard_pass_at_1: null

@@ -66,6 +66,15 @@ def _normalise_tool_calls(message: dict) -> dict:
             function["arguments"] = json.dumps(arguments)
         elif not isinstance(arguments, str) or not arguments.strip():
             function["arguments"] = "{}"
+        else:
+            try:
+                json.loads(arguments)
+            except ValueError:
+                # A call cut off by max_tokens leaves a half-written JSON string. Echoing
+                # it back is rejected outright ("Invalid tool_calls.function.arguments
+                # value, expected JSON"), which ends the trajectory over one bad turn.
+                function["arguments"] = "{}"
+                function["_truncated"] = True
         call["function"] = function
         repaired.append(call)
     message["tool_calls"] = repaired
@@ -178,6 +187,11 @@ class Loop:
             )
 
             calls = assistant.get("tool_calls") or []
+            if reply.finish_reason == "length":
+                self._append_user(
+                    "Your previous message hit the output limit and was cut off mid-call. "
+                    "Send a shorter tool call — build the work up over several calls "
+                    "rather than one long one.", "truncated")
             if not calls:
                 # A model that stops calling tools without finishing has stopped working;
                 # say so once and give it another turn rather than ending the episode.
