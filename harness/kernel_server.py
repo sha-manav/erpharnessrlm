@@ -72,9 +72,17 @@ class Namespace:
                 try:
                     module = __import__(f"lib.{module_name}", fromlist=[module_name])
                     self.globals[module_name] = module
+                    missing = []
                     for symbol in getattr(module, "EXPORTS", []):
-                        self.globals[symbol] = getattr(module, symbol)
+                        if hasattr(module, symbol):
+                            self.globals[symbol] = getattr(module, symbol)
+                        else:
+                            missing.append(symbol)
                     loaded.append(module_name)
+                    if missing:
+                        # A stale EXPORTS entry must not cost the whole module: the agent
+                        # can still use it via `module.thing`.
+                        failed[f"{module_name}:exports"] = f"missing symbols {missing}"
                 except Exception as exc:  # noqa: BLE001 - reported, never fatal
                     failed[module_name] = f"{type(exc).__name__}: {exc}"
             self.globals["lib"] = lib

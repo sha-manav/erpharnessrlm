@@ -282,3 +282,30 @@ def test_show_serves_pages_from_the_loops_own_store(tmp_path):
     assert tool_messages[1].startswith("y")
     assert "page 2 of" in tool_messages[1]
     assert "no such handle" in tool_messages[2]
+
+
+def test_tool_call_arguments_are_repaired_before_being_echoed(tmp_path):
+    """Providers reject an echoed tool_call whose arguments are not a JSON string.
+
+    Observed live: GLM-5.1 via Chutes returned HTTP 400 "Invalid
+    tool_calls.function.arguments value, expected JSON" and killed the trajectory. The
+    loop repairs the shapes providers actually emit rather than passing them back raw.
+    """
+    reply = FakeReply("python", {"code": "x"})
+    reply.message["tool_calls"] = [
+        {"id": "a", "type": "function", "function": {"name": "python", "arguments": {"code": "x"}}},
+        {"id": "b", "type": "function", "function": {"name": "python", "arguments": ""}},
+        {"id": "c", "type": "function", "function": {"name": "python", "arguments": None}},
+    ]
+    loop, _, traj = build(tmp_path, [reply], step_cap=1)
+    loop.run()
+    traj.close()
+
+    echoed = [m for m in loop.messages if m.get("role") == "assistant"][0]
+    for call in echoed["tool_calls"]:
+        arguments = call["function"]["arguments"]
+        assert isinstance(arguments, str)
+        json.loads(arguments)          # must parse, not merely be a string
+    assert json.loads(echoed["tool_calls"][0]["function"]["arguments"]) == {"code": "x"}
+    assert echoed["tool_calls"][1]["function"]["arguments"] == "{}"
+    assert echoed["tool_calls"][2]["function"]["arguments"] == "{}"

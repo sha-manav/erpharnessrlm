@@ -29,7 +29,9 @@ from typing import Callable
 
 from .fmt import Table
 
-EXPORTS = ["check", "Check", "Rule"]
+# The module itself is bound in the namespace as `check`; EXPORTS names the extra
+# symbols to bind alongside it. Listing "check" here asked for lib.check.check.
+EXPORTS = ["Check", "Rule"]
 
 # Documents the agent is responsible for finishing once it has created them.
 DRAFT_STATES = {

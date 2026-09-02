@@ -44,6 +44,34 @@ class LoopResult:
     providers: dict[str, int] = field(default_factory=dict)
 
 
+def _normalise_tool_calls(message: dict) -> dict:
+    """Make an assistant message safe to send back.
+
+    `tool_calls[].function.arguments` must be a JSON *string* on the way back in. Providers
+    are not consistent about what they emit — an object, or an empty string when the model
+    called a tool with no arguments — and echoing either verbatim gets the whole request
+    rejected: `HTTP 400 Invalid tool_calls.function.arguments value, expected JSON`. That
+    kills the trajectory at whatever step it happens, so it is repaired here rather than
+    left to the provider.
+    """
+    calls = message.get("tool_calls")
+    if not calls:
+        return message
+    repaired = []
+    for call in calls:
+        call = dict(call)
+        function = dict(call.get("function") or {})
+        arguments = function.get("arguments")
+        if isinstance(arguments, (dict, list)):
+            function["arguments"] = json.dumps(arguments)
+        elif not isinstance(arguments, str) or not arguments.strip():
+            function["arguments"] = "{}"
+        call["function"] = function
+        repaired.append(call)
+    message["tool_calls"] = repaired
+    return message
+
+
 class Trajectory:
     """Append-only JSONL log in the common schema."""
 
@@ -138,7 +166,7 @@ class Loop:
                                       latency_s=None)
                 return self._done("api_error", summary)
 
-            assistant = dict(reply.message)
+            assistant = _normalise_tool_calls(dict(reply.message))
             assistant.setdefault("role", "assistant")
             self.messages.append(assistant)
             self.trajectory.write(
@@ -149,7 +177,7 @@ class Loop:
                 finish_reason=reply.finish_reason,
             )
 
-            calls = reply.tool_calls
+            calls = assistant.get("tool_calls") or []
             if not calls:
                 # A model that stops calling tools without finishing has stopped working;
                 # say so once and give it another turn rather than ending the episode.
@@ -167,7 +195,7 @@ class Loop:
                 name = (call.get("function") or {}).get("name", "")
                 try:
                     args = json.loads((call.get("function") or {}).get("arguments") or "{}")
-                except ValueError:
+                except (ValueError, TypeError):
                     args = {}
 
                 started = time.time()

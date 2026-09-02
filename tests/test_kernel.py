@@ -114,3 +114,23 @@ def test_plumbing_ships_even_when_the_config_omits_it(container):
         assert "erp.py" in listing and "check.py" in listing and "plan.py" in listing
     finally:
         container.exec("rm -rf /harness/lib")
+
+
+def test_a_stale_export_name_does_not_lose_the_module(container):
+    """One bad EXPORTS entry cost the whole `check` module on the first C_full run."""
+    from harness.container import Kernel
+
+    container.exec("mkdir -p /harness/lib")
+    container.put_file("/harness/lib/probe_mod.py",
+                       "EXPORTS = ['Present', 'AbsentSymbol']\nclass Present: pass\n")
+    kern = Kernel(container, port=8802, lib_modules=["probe_mod"])
+    try:
+        kern.start()
+        status = kern.lib_status()
+        assert "probe_mod" in status["loaded"], status
+        assert "probe_mod:exports" in status["failed"]
+        assert "AbsentSymbol" in status["failed"]["probe_mod:exports"]
+        assert kern.run("print(Present.__name__)")["stdout"].strip() == "Present"
+    finally:
+        kern.stop()
+        container.exec("rm -f /harness/lib/probe_mod.py")
