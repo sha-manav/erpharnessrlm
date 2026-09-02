@@ -89,10 +89,11 @@ po = erp.create_po(o['vendor_id'], [(o['product_id'], max(o['min_qty'], 5))], da
 erp.confirm_po(po)
 print('seeded late PO', po)
 """
+    # A real repair: the vendor's lead time is what it is (arrival now honours it, so
+    # merely retyping date_planned earlier no longer counts), so the customer's due date
+    # is renegotiated out past the arrival. That is what a feasible plan looks like.
     fix_late = """
-for line in erp.search_read('purchase.order.line', [('order_id', '=', po)], ['id'], limit=5):
-    erp.call('purchase.order.line', 'write', [[line['id']], {'date_planned': '2026-09-08 12:00:00'}])
-erp.call('purchase.order', 'write', [[po], {'date_planned': '2026-09-08 12:00:00'}])
+erp.call('sale.order', 'write', [[so], {'commitment_date': '2026-10-30 12:00:00'}])
 print('moved receipt earlier')
 """
     steps = [
@@ -104,6 +105,21 @@ print('moved receipt earlier')
     ]
     monkeypatch.setattr(agent_module, "LLM", _script(steps))
     monkeypatch.setenv("OPENROUTER_API_KEY", "scripted")
+
+    # Start from no confirmed orders: other modules leave origin-less POs and forced
+    # receipts behind, and this test's refusal/acceptance must be about ITS scenario.
+    from harness.container import Kernel
+    pre = Kernel(DockerContainer(dev_container_name), port=8812, lib_modules=["erp"])
+    pre.start(env=agent_module.CONTAINER_ENV)
+    try:
+        pre.run("""
+for po in erp.search_read('purchase.order', [('state','not in',('cancel','done'))], ['id'], limit=100):
+    erp.cancel('purchase.order', po['id'])
+for so in erp.search_read('sale.order', [('state','not in',('cancel',))], ['id'], limit=100):
+    erp.cancel('sale.order', so['id'])
+""", timeout=120)
+    finally:
+        pre.stop()
 
     agent = agent_module.ErpAgent(
         logs_dir=tmp_path, model_name="z-ai/glm-5.1", logger=logging.getLogger("t"),

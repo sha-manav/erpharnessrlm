@@ -456,6 +456,59 @@ def _demand_covered(client) -> tuple[bool, str]:
     return True, f"every confirmed order line has supply behind it ({len(lines)} line(s))"
 
 
+def _no_fabricated_receipts(client) -> tuple[bool, str]:
+    """Appendix B.5, second half (hard) — nothing was received before it could arrive.
+
+    The write-time guard refuses `receive()` while goods are not due, but `force=True`
+    exists and the model used it: "let me try receiving with force=True and see what the
+    checks say" — and the checks said nothing, because timeline_feasible judges the
+    *planned* arrival. A receipt validated before order date + the vendor's lead time is
+    stock that does not exist, however good the rest of the plan looks.
+    """
+    done = client.search_read(
+        "stock.picking",
+        [("picking_type_id.code", "=", "incoming"), ("state", "=", "done")],
+        ["name", "date_done", "purchase_id", "origin"], limit=200)
+    if not done:
+        return True, "no validated receipts"
+    problems = []
+    for picking in done:
+        po_id = picking["purchase_id"][0] if picking.get("purchase_id") else None
+        if not po_id:
+            continue
+        order = client.search_read(
+            "purchase.order", [("id", "=", po_id)],
+            ["name", "partner_id", "date_order", "state"], limit=1)
+        if not order or not order[0].get("date_order") or not order[0]["partner_id"]:
+            continue
+        order = order[0]
+        if order.get("state") == "cancel":
+            continue            # a cancelled order's receipt is not part of any plan
+        lines = client.search_read(
+            "purchase.order.line", [("order_id", "=", po_id)], ["product_id"], limit=50)
+        for line in lines:
+            if not line["product_id"]:
+                continue
+            delay = _vendor_delay(client, order["partner_id"][0], line["product_id"][0])
+            if delay is None or delay <= 0:
+                continue
+            earliest = _add_days(order["date_order"], delay)
+            received = (picking.get("date_done") or "")[:19]
+            if received and received[:10] < earliest[:10]:
+                problems.append(
+                    f"{picking['name']} ({order['name']}): {line['product_id'][1]} received "
+                    f"{received[:10]}, vendor lead time {delay}d from {order['date_order'][:10]} "
+                    f"means it cannot arrive before {earliest[:10]}")
+                break
+    if problems:
+        shown = "; ".join(problems[:4])
+        more = f" (+{len(problems) - 4} more)" if len(problems) > 4 else ""
+        return False, (f"{len(problems)} receipt(s) validated before the goods could arrive: "
+                       f"{shown}{more}. This is fabricated stock. Cancel the receipt (leave the "
+                       "PO confirmed) unless the task explicitly says the goods are already here.")
+    return True, f"every validated receipt is on or after its vendor's earliest arrival ({len(done)})"
+
+
 def _po_has_origin(client) -> tuple[bool, str]:
     """Soft — every purchase order says what it is for.
 
@@ -500,6 +553,8 @@ INVARIANTS: list[Check] = [
     Check("timeline_feasible", "receipts land before the demand they feed", True,
           _timeline_feasible),
     Check("mo_feasible", "MO components are available before it starts", True, _mo_feasible),
+    Check("no_fabricated_receipts", "nothing received before it could arrive", True,
+          _no_fabricated_receipts),
     Check("po_has_origin", "purchase orders say what they are for", False, _po_has_origin),
     Check("so_has_commitment_date", "confirmed sales orders carry a due date", False,
           _so_has_commitment_date),

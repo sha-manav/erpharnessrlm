@@ -22,7 +22,10 @@ erp.confirm_po(po)                                       # leave it confirmed; n
 ```
 
 `erp.receive(po)` exists for goods that are genuinely due — a receipt whose planned date
-has passed — not for closing the loop early.
+has passed — not for closing the loop early. **`force=True` never makes a check pass**: a
+forced early receipt is refused at finish as fabricated stock. If a delivery cannot be
+covered from stock plus purchases that arrive in time, that is the answer — report it,
+do not manufacture it.
 
 **Manufacturing.** Create the MO, confirm, then produce. `erp.produce` reserves, sets
 `qty_producing`, **writes the component consumption explicitly** and marks done — without

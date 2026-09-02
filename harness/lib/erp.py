@@ -676,7 +676,9 @@ class Erp:
                 raise OdooError(
                     f"goods on this PO are not due until {soonest} (today is {today}); "
                     "receiving now would record stock that has not arrived. Leave the PO "
-                    "confirmed, or pass force=True if the task explicitly says to receive.",
+                    "confirmed. force=True is only for a task that explicitly says the goods "
+                    "are already here -- a forced early receipt is refused at finish as "
+                    "fabricated stock, so it will not make a check pass.",
                     "purchase.order", "receive")
         pickings = self.search_read(
             "stock.picking", [("id", "in", self._po_picking_ids(po_id)),

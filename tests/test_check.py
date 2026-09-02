@@ -504,3 +504,27 @@ def test_an_optimistic_planned_date_does_not_fool_the_timeline_check(erp, offer)
     finally:
         erp.cancel("purchase.order", po_id)
         erp.cancel("sale.order", so_id)
+
+
+def test_a_forced_early_receipt_is_refused_at_finish(erp, tmp_path):
+    """The force=True hole: guard refused receive(), the model forced it, the gate said nothing."""
+    from lib import check, finish as finish_module
+
+    offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
+    if not offers:
+        pytest.skip("no vendor with a 3+ day lead time")
+    o = offers[0]
+    from datetime import datetime, timedelta
+    later = (datetime.utcnow() + timedelta(days=int(o["delay_days"]) + 2)).strftime("%Y-%m-%d %H:%M:%S")
+    po_id = erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 1))], date_planned=later)
+    erp.confirm_po(po_id)
+    erp.receive(po_id, force=True)          # the move the model made
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "no_fabricated_receipts") == "FAIL"
+        assert "cannot arrive before" in evidence_of(table, "no_fabricated_receipts")
+        finish_module.SUMMARY_PATH = str(tmp_path / "summary.md")
+        result = finish_module.finish("done", client=erp)
+        assert "finish refused" in result and "no_fabricated_receipts" in result
+    finally:
+        erp.cancel("purchase.order", po_id)
