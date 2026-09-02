@@ -38,7 +38,12 @@ big:
   supports_prompt_cache: null      # measured in P0.4
   pricing_per_mtok: {input: 0.966, cached_input: null, output: 3.036}
   leaderboard_pass_at_1: 35.8      # published coding-mode number for GLM-5.1
-  provider_routing: {only: [gmicloud, chutes], allow_fallbacks: false, quantizations: [fp8]}
+  # GMICloud only. Chutes has the cheapest cache-read price ($0.098/Mtok) and barely honours
+  # the cache: measured 6% hit rate over an 8-turn growing conversation against GMICloud's
+  # 46% (61% after the two cold-start writes), and a full dev5 trial routed entirely to
+  # Chutes cached 39% where pi -- which lands on GMICloud 9 times in 10 -- caches 83%. A
+  # cheap cache read is worth nothing if the read never happens.
+  provider_routing: {only: [gmicloud], allow_fallbacks: false, quantizations: [fp8]}
   est_cost_per_trial_usd: 0.73     # measured over 49 eval100 trials of config A (dev5's $0.23 was
                                    # unrepresentative: dev5 is the five easiest patterns)
 
