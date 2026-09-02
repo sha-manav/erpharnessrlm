@@ -161,11 +161,19 @@ def test_quantity_below_the_vendor_minimum_is_detected(erp, offer):
 def test_wrong_tier_price_is_detected(erp, offer):
     from lib import check
 
+    # Confirming a PO makes Odoo record an offer at that price, so a fixed wrong price
+    # becomes a legitimate tier on the *next* run of this test and the seeded violation
+    # quietly stops being one. Pick a price above every offer that already exists, which
+    # stays wrong however many times this has run before.
+    existing = erp.search_read(
+        "product.supplierinfo", [("partner_id", "=", offer["vendor_id"])], ["price"], limit=200)
+    wrong_price = max([row["price"] or 0 for row in existing] + [offer["price"] or 10]) * 3 + 137.0
+
     po_id = erp.call("purchase.order", "create", [{
         "partner_id": offer["vendor_id"],
         "order_line": [(0, 0, {"product_id": offer["product_id"],
                                "product_qty": max(offer["min_qty"], 1),
-                               "price_unit": (offer["price"] or 10) + 25.0})],
+                               "price_unit": wrong_price})],
     }])
     erp.confirm_po(po_id)
     try:
