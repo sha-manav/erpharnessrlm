@@ -93,7 +93,17 @@ erp.earliest_build(product_id, qty)              # when an MO can start and fini
                                                   # lead time, work-centre options
 erp.workcenter_options(product_id)               # centres that assemble it: min/unit, cost,
                                                   # minutes free, units that fit
+erp.cheapest_buy(product_id, qty, need_by)       # the min-cost split across vendors that
+                                                  # land in time (MOQ, note-stated maxima):
+                                                  # PO lines to write, total in the title
+erp.earliest_build(product_id, qty, need_by=due) # with a due date: components sourced the
+                                                  # cheapest feasible way (buy_lines), not
+                                                  # the fastest
 ```
+
+Buy exactly the shortfall (`needed - free_now`), split the way `cheapest_buy` says: a plan
+that met every constraint still lost on spend alone for buying 66 + 7 where 63 + 10 was
+cheaper, and 74 where 73 was needed.
 
 An empty `feasible_vendors` table means no listed vendor can make the date — cover the
 demand from stock or manufacturing, or say so in the summary. Never invent a

@@ -498,3 +498,38 @@ def test_create_mo_writes_deadline_origin_and_workcenter(erp):
         erp.cancel("mrp.production", mo)
     finally:
         erp.cancel("sale.order", so_id)
+
+
+def test_cheapest_buy_is_never_dearer_than_any_single_vendor(erp, catalogue):
+    """The min-cost split across offers, honouring MOQ, note-stated maxima and lead time."""
+    product_id = catalogue["product_id"]
+    single = erp.feasible_vendors(product_id, 10, erp.today()[:10].replace("-", "-") + " 23:59:59"
+                                  if False else "2027-01-01")
+    split = erp.cheapest_buy(product_id, 10, need_by="2027-01-01")
+    rows = split.all()
+    assert rows, split.title if hasattr(split, "title") else str(split)
+    total = sum(r["line_total"] for r in rows)
+    cheapest_single = min(r["line_total"] for r in single.all())
+    assert total <= cheapest_single + 0.01
+    assert all(r["qty"] >= (r["min_qty"] or 0) for r in rows)
+    assert all((r["max_qty"] is None) or r["qty"] <= r["max_qty"] for r in rows)
+    # A due date no vendor can meet yields an empty table, not a wrong one.
+    from lib.erp import _add_days
+    assert not erp.cheapest_buy(product_id, 10, need_by=_add_days(erp.today(), -1)).all()
+
+
+def test_earliest_build_with_a_due_date_sources_the_cheapest_feasible_way(erp):
+    boms = erp.search_read("mrp.bom", [("bom_line_ids", "!=", False)], ["product_tmpl_id"], limit=1)
+    if not boms:
+        pytest.skip("no BOM in this scenario")
+    pid = erp.search_read("product.product", [("product_tmpl_id", "=", boms[0]["product_tmpl_id"][0])],
+                          ["id"], limit=1)[0]["id"]
+    free = {c["component_id"]: c["free_now"] for c in erp.earliest_build(pid, 1)["components"]}
+    qty = int(max(free.values(), default=0)) + 5          # short on at least one component
+    plan = erp.earliest_build(pid, qty, need_by="2027-03-01")
+    bought = [c for c in plan["components"] if c.get("source") == "buy"]
+    if not bought:
+        pytest.skip("every component is on hand or made")
+    split = [c for c in bought if "buy_lines" in c]
+    assert split, "with a far due date every short component should get a cheapest split"
+    assert all(c["buy_cost"] > 0 and c["buy"] >= c["needed"] - c["free_now"] - 1e-6 for c in split)

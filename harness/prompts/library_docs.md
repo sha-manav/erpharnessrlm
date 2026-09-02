@@ -35,7 +35,8 @@ Bound in your kernel: `erp`, `Erp`, `OdooError`.
 - `invoices(move_type='out_invoice', state=None)`
 - `today()` — The server's idea of now, as an Odoo datetime string (UTC).
 - `feasible_vendors(product_id, qty, need_by, order_date=None)` — Vendors who can land `qty` of a product by `need_by`, with the arrival date.
-- `earliest_build(product_id, qty, order_date=None, _depth=0)` — When an MO for `qty` could start, given components on hand, purchasable, or buildable.
+- `cheapest_buy(product_id, qty, need_by=None, order_date=None)` — The cheapest way to buy `qty` of a product: which vendors, how many from each.
+- `earliest_build(product_id, qty, order_date=None, need_by=None, _depth=0)` — When an MO for `qty` could start, given components on hand, purchasable, or buildable.
 - `create_po(vendor_id, lines, date_planned=None, origin=None, force=False)` — Create a purchase order. `lines` = [(product_id, qty[, price_unit[, date_planned]])].
 - `vendor_price(vendor_id, product_id, qty)` — The supplierinfo price for this vendor/product at this quantity tier.
 - `confirm_po(po_id)` — `purchase.order.button_confirm`.

@@ -116,6 +116,62 @@ def _minutes_limit(note: str) -> float | None:
     return max(found) if found else None
 
 
+def _max_qty_from_notes(notes: str, product_code: str | None) -> float | None:
+    """A maximum order quantity a vendor's Internal Notes state for this product, if any.
+
+    Odoo has no max_qty on an offer; tasks that cap a vendor write it in the partner's
+    notes ("Maximum order quantity for <code>: N units"). A note that names products caps
+    only those; a note that states a bare number caps everything.
+    """
+    text = _strip_html(notes or "")
+    if not text or not re.search(r"max(?:imum)?\s+order\s+quantity", text, re.I):
+        return None
+    named = re.findall(r"max(?:imum)?\s+order\s+quantity\s+for\s+([^:\n]+?)\s*:\s*(\d[\d,]*(?:\.\d+)?)",
+                       text, re.I)
+    if named:
+        for name, number in named:
+            if product_code and product_code.lower() in name.lower():
+                return float(number.replace(",", ""))
+        return None
+    m = re.search(r"max(?:imum)?\s+order\s+quantity\s*(?:is|of|=|:)?\s*(\d[\d,]*(?:\.\d+)?)", text, re.I)
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def _cheapest_split(offers: list[dict], qty: float) -> tuple[float, list[tuple[dict, int]]] | None:
+    """Min-cost way to buy at least `qty` units across offers, each used at most once with
+    `min_qty <= units <= max_qty`. Exact (dynamic programme over units bought); offers
+    are few and quantities are hundreds, so this is instant. None if no combination
+    reaches `qty` (every vendor capped below it).
+    """
+    import math
+
+    need = int(math.ceil(qty - 1e-9))
+    if need <= 0:
+        return 0.0, []
+    max_moq = max((int(math.ceil(o.get("min_qty") or 0)) for o in offers), default=0)
+    cap = need + max_moq + 1
+    best: dict[int, tuple[float, list]] = {0: (0.0, [])}
+    for offer in offers:
+        lo = max(1, int(math.ceil(offer.get("min_qty") or 0)))
+        hi = int(offer["max_qty"]) if offer.get("max_qty") else cap
+        if hi < lo:
+            continue
+        step = dict(best)
+        for units, (cost, choice) in best.items():
+            for q in range(lo, hi + 1):
+                total_units = units + q
+                if total_units > cap:
+                    break
+                cost_here = cost + q * (offer.get("price") or 0.0)
+                if total_units not in step or cost_here < step[total_units][0]:
+                    step[total_units] = (cost_here, choice + [(offer, q)])
+        best = step
+    reachable = [(c, ch) for u, (c, ch) in best.items() if u >= need]
+    if not reachable:
+        return None
+    return min(reachable, key=lambda item: (item[0], sum(q for _, q in item[1])))
+
+
 def _add_days(stamp: str, days: float) -> str:
     from datetime import datetime, timedelta
 
@@ -602,8 +658,56 @@ class Erp:
                             "delay_days", "arrives", "slack_days", "line_total", "vendor_notes"],
                      f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]}")
 
+    def cheapest_buy(self, product_id: int, qty: float, need_by: str | None = None,
+                     order_date: str | None = None) -> Table:
+        """The cheapest way to buy `qty` of a product: which vendors, how many from each.
+
+        Chooses across every offer that can land by `need_by` (all offers when None),
+        honouring each offer's `min_qty` and any maximum the vendor's Internal Notes state
+        for this product, and minimising total cost exactly. This replaces hand-picking:
+        on a sub-assembly task the plan that bought 66 + 7 where 63 + 10 was cheaper, and
+        74 where 73 was needed, lost on spend alone with every constraint met.
+
+        Rows are PO lines to write (vendor_id, qty, price, date_planned = arrival); the
+        title carries the total. Empty when no combination reaches `qty` in time.
+        """
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime((order_date or self.today())[:19], "%Y-%m-%d %H:%M:%S")
+        due = None
+        if need_by and len(need_by) <= 10:
+            need_by = need_by + " 23:59:59"
+        if need_by:
+            due = datetime.strptime(need_by[:19] if len(need_by) > 10 else need_by + " 23:59:59",
+                                    "%Y-%m-%d %H:%M:%S")
+        product = self.get("product.product", [product_id], ["default_code"])
+        code = (product[0].get("default_code") or None) if product else None
+        offers = []
+        for offer in self.suppliers([product_id]).all():
+            arrives = start + timedelta(days=int(offer["delay_days"] or 0))
+            if due is not None and arrives > due:
+                continue
+            offers.append({**offer, "arrives": arrives.strftime("%Y-%m-%d %H:%M:%S"),
+                           "max_qty": _max_qty_from_notes(offer.get("vendor_notes") or "", code)})
+        cols = ["vendor_id", "vendor", "qty", "price", "line_total", "min_qty", "max_qty",
+                "delay_days", "date_planned"]
+        when = f" by {need_by[:10]}" if need_by else ""
+        if not offers:
+            return Table([], cols, f"cheapest buy of {qty:g} × product {product_id}{when}: no vendor can land it in time")
+        solved = _cheapest_split(offers, qty)
+        if solved is None:
+            return Table([], cols, f"cheapest buy of {qty:g} × product {product_id}{when}: vendor maxima sum below the quantity")
+        total, lines = solved
+        rows = [{"vendor_id": o["vendor_id"], "vendor": o["vendor"], "qty": q, "price": o["price"],
+                 "line_total": round(q * (o["price"] or 0), 2), "min_qty": o["min_qty"],
+                 "max_qty": o.get("max_qty"), "delay_days": o["delay_days"], "date_planned": o["arrives"]}
+                for o, q in lines]
+        units = sum(q for _, q in lines)
+        return Table(rows, cols, f"cheapest buy of {qty:g} × product {product_id}{when}: "
+                                 f"{units:g} units for ${total:,.2f} across {len(rows)} PO line(s)")
+
     def earliest_build(self, product_id: int, qty: float, order_date: str | None = None,
-                       _depth: int = 0) -> dict:
+                       need_by: str | None = None, _depth: int = 0) -> dict:
         """When an MO for `qty` could start, given components on hand, purchasable, or buildable.
 
         For every BOM component: what is free now; if short, whether it can be **bought**
@@ -618,6 +722,8 @@ class Erp:
         from datetime import datetime, timedelta
 
         start = datetime.strptime((order_date or self.today())[:19], "%Y-%m-%d %H:%M:%S")
+        if need_by and len(need_by) <= 10:
+            need_by = need_by + " 23:59:59"
         bom_rows = [r for r in self.boms([product_id]).all() if r["component_id"]]
         if not bom_rows:
             return {"date_start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -637,15 +743,31 @@ class Erp:
             shortfall = need - have
             offers = sorted(self.suppliers([row["component_id"]]).all(),
                             key=lambda o: (o["delay_days"] or 0, o["price"] or 0))
+            latest_start = (_add_days(need_by, -(self.bom_for(product_id) or {}).get("lead_days", 0))
+                            if need_by else None)
             sub_bom = [b for b in self.boms([row["component_id"]]).all() if b["component_id"]]
             buy_ready = make_ready = None
-            if offers:
+            if offers and need_by:
+                # With a due date the question is not "fastest" but "cheapest that makes
+                # it": components must land by the latest start, need_by - lead time.
+                plan = self.cheapest_buy(row["component_id"], shortfall, need_by=latest_start,
+                                         order_date=order_date).all()
+                if plan:
+                    buy_ready = max(datetime.strptime(l["date_planned"][:19], "%Y-%m-%d %H:%M:%S")
+                                    for l in plan)
+                    entry.update({"buy": round(sum(l["qty"] for l in plan), 3),
+                                  "from": ", ".join(f"{l['vendor']} ×{l['qty']:g}" for l in plan),
+                                  "vendor_id": plan[0]["vendor_id"],
+                                  "buy_lines": [(l["vendor_id"], l["qty"], l["price"], l["date_planned"]) for l in plan],
+                                  "buy_cost": round(sum(l["line_total"] for l in plan), 2)})
+            if offers and buy_ready is None:
                 o = offers[0]
                 buy_ready = start + timedelta(days=int(o["delay_days"] or 0))
                 entry.update({"buy": round(max(shortfall, o["min_qty"] or 0), 3),
                               "from": o["vendor"], "vendor_id": o["vendor_id"]})
             if sub_bom and _depth < 3:
-                sub = self.earliest_build(row["component_id"], shortfall, order_date, _depth + 1)
+                sub = self.earliest_build(row["component_id"], shortfall, order_date,
+                                          need_by=latest_start if need_by else None, _depth=_depth + 1)
                 if not sub["unsourceable"]:
                     make_ready = datetime.strptime(sub["date_start"][:19], "%Y-%m-%d %H:%M:%S")
                     entry.update({"make": round(shortfall, 3), "make_start": sub["date_start"]})

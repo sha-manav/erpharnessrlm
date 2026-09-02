@@ -964,6 +964,19 @@ ERP_DEV_CONTAINER=erpdev65 ERP_DEV_PORT=18070`):
 - Also fixed from make6's first steps: `import check` (ModuleNotFoundError) — library
   modules are now aliased in `sys.modules`.
 
+### make7 (2026-09-02, running) — first make-task passes, and a loss on spend alone
+
+2208 (mixed: two POs + a 4-unit MO, rehearsed twice, 27 steps, $0.52) and 2065 (both
+pi and v0 scored ~20) at 100; 2017 at 100 (the vacuous-finish case). 2109 scored
+**96.89 with every constraint and hygiene rule green**: spend $224,600 vs the
+reference's $222,235. Read against the dev task's reference plan the gap is exactly two
+purchasing choices — 66 + 7 where 63 + 10 was a cheaper tier mix on one component, and 74
+units where 73 were needed on another. Both are what an exact min-cost split returns from
+the true shortfall, so `erp.cheapest_buy(product_id, qty, need_by)` now solves it
+(dynamic programme over offers with MOQ, note-stated maxima and lead time; unit-tested
+on the 2109 numbers), and `earliest_build(..., need_by=)` sources short components that
+way instead of "fastest vendor".
+
 ## Freeze
 
 *(P3.7)*
