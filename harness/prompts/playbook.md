@@ -21,8 +21,9 @@ po = erp.create_po(vendor_id, [(product_id, qty)],
 erp.confirm_po(po)                                       # leave it confirmed; no receive()
 ```
 
-`erp.receive(po)` exists for goods that are genuinely due — a receipt whose planned date
-has passed — not for closing the loop early. **`force=True` never makes a check pass**: a
+`erp.receive(po)` exists for goods whose planned date has already passed — not for goods
+that *will* arrive in time. "Arrives before the due date" means the order is correct as it
+stands; it does not mean you receive it now. **`force=True` never makes a check pass**: a
 forced early receipt is refused at finish as fabricated stock. If a delivery cannot be
 covered from stock plus purchases that arrive in time, that is the answer — report it,
 do not manufacture it.

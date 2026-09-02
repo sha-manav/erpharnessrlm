@@ -675,10 +675,12 @@ class Erp:
                 soonest = min(l["date_planned"][:10] for l in pending)
                 raise OdooError(
                     f"goods on this PO are not due until {soonest} (today is {today}); "
-                    "receiving now would record stock that has not arrived. Leave the PO "
-                    "confirmed. force=True is only for a task that explicitly says the goods "
-                    "are already here -- a forced early receipt is refused at finish as "
-                    "fabricated stock, so it will not make a check pass.",
+                    "receiving now would record stock that has not arrived. A PO that arrives "
+                    "before the customer's due date already covers that demand as it stands: "
+                    "leave it confirmed, leave that delivery pending, and the checks will pass. "
+                    "force=True is only for a task that explicitly says the goods are already "
+                    "here -- a forced early receipt is refused at finish as fabricated stock, "
+                    "so it will not make a check pass.",
                     "purchase.order", "receive")
         pickings = self.search_read(
             "stock.picking", [("id", "in", self._po_picking_ids(po_id)),
