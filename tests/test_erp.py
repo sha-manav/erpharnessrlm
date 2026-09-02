@@ -533,3 +533,40 @@ def test_earliest_build_with_a_due_date_sources_the_cheapest_feasible_way(erp):
     split = [c for c in bought if "buy_lines" in c]
     assert split, "with a far due date every short component should get a cheapest split"
     assert all(c["buy_cost"] > 0 and c["buy"] >= c["needed"] - c["free_now"] - 1e-6 for c in split)
+
+
+def test_an_alternate_centre_is_priced_with_a_margin_and_says_so(erp):
+    """The alternate's true rate is not in the database (verified on a repair scenario:
+    a seeded work order there carries qty x the primary's minutes). The helpers assume
+    it is slower and label the assumption; filling an alternate at the primary's rate
+    failed the capacity rule."""
+    from lib.erp import ALT_RATE_MARGIN
+
+    centres = erp.search_read("mrp.workcenter", [("alternative_workcenter_ids", "!=", False)],
+                              ["alternative_workcenter_ids"], limit=1)
+    if not centres:
+        pytest.skip("this scenario has no alternate work centres")
+    ops = erp.search_read("mrp.routing.workcenter", [("workcenter_id", "=", centres[0]["id"])],
+                          ["bom_id", "time_cycle_manual"], limit=1)
+    if not ops:
+        pytest.skip("primary centre has no operation")
+    bom = erp.get("mrp.bom", [ops[0]["bom_id"][0]], ["product_tmpl_id"])[0]
+    pid = erp.search_read("product.product", [("product_tmpl_id", "=", bom["product_tmpl_id"][0])],
+                          ["id"], limit=1)[0]["id"]
+    rows = erp.workcenter_options(pid).all()
+    primary = [r for r in rows if r["role"] == "primary"][0]
+    alts = [r for r in rows if r["role"] == "alternative"]
+    assert alts and primary["rate"] == "stated"
+    for a in alts:
+        assert a["rate"].startswith("assumed") and abs(a["min_per_unit"] - primary["min_per_unit"] * ALT_RATE_MARGIN) < 1e-6
+        if a["minutes_limit"] and primary["minutes_limit"]:
+            pass
+    # Committed minutes on an alternate use the same margin.
+    table = {r["id"]: r for r in erp.workcenters().all()}
+    for a in alts:
+        wos = erp.search_read("mrp.workorder", [("workcenter_id", "=", a["workcenter_id"]), ("state", "!=", "cancel")],
+                              ["production_id"], limit=50)
+        if wos:
+            qty = sum(erp.get("mrp.production", [w["production_id"][0]], ["product_qty", "state"])[0]["product_qty"]
+                      for w in wos if erp.get("mrp.production", [w["production_id"][0]], ["state"])[0]["state"] != "cancel")
+            assert abs(table[a["workcenter_id"]]["minutes_committed"] - qty * a["min_per_unit"]) < 1.0

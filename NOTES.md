@@ -1000,6 +1000,19 @@ contract says cost is the objective only when the task says so.
 
 dev40 launched on this code (commit below) under scripts/paired.py's stop rule.
 
+### dev40 (running): alternate work centres have no stated rate
+
+2290 (hard repair) scored 22.9 on `assembly_capacity_compliance` with my
+`workcenter_capacity` check green: the plan put 84 units on Fabrication Cell 2, which my
+helper priced at the primary operation's 45 min/unit (3,780 of 3,800 free) while the
+grader prices that centre at 55. Checked on a devbox of the same scenario: Odoo holds no
+per-centre rate — the seeded work order on that centre carries 39 × 45 = 1,755 min, and
+a work order moved there keeps 45/unit. The rate the grader uses exists only in the
+scenario file (pi failed the same rule the same way). So an alternate's rate is unknown
+to any agent; the helpers now assume `ALT_RATE_MARGIN` (1.5×) for a centre without its
+own operation, label it "assumed … (not stated)", and the playbook says to leave that
+headroom. Dev scenarios that state alternate rates put them at 1.18–1.40×.
+
 ## Freeze
 
 *(P3.7)*

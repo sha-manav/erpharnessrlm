@@ -57,7 +57,11 @@ po = erp.create_po(vendor_id, [(component_id, need)],        # components first
 ```
 
 When one centre's minutes cannot hold the whole quantity, split it: two MOs on two
-centres (`units_fit` says how many each takes), or make part and buy the rest.
+centres (`units_fit` says how many each takes), or make part and buy the rest. An
+**alternate** centre has no stated rate for the product — Odoo shows the primary's
+minutes there, and that number is not the truth. The helpers assume an alternate is
+slower (`rate` column says so); use their `units_fit`, never the primary's rate, and
+leave that headroom rather than filling an alternate to its limit.
 `erp.produce` exists for goods needed today: it reserves, sets `qty_producing`,
 **writes the component consumption explicitly** and marks done — without that Odoo
 finishes the order having consumed nothing.

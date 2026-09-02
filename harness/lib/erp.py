@@ -99,6 +99,16 @@ def _ids(value: int | Iterable[int] | None) -> list[int] | None:
     return list(value)
 
 
+# A work centre that has no operation of its own for a product has no stated rate: Odoo
+# prices a work order moved there at the primary operation's minutes and a seeded work
+# order on it carries qty x that same rate. Verified on a repair scenario's live database
+# (2290): 39 units on the alternate = 1,755 min, i.e. 45/unit, while the plan that filled
+# that centre on 45/unit failed its capacity rule. The true rate of an alternate is not in
+# the database, so the helpers assume it is slower by this factor and say so. Dev
+# scenarios that state alternate rates put them at 1.18-1.40x the primary.
+ALT_RATE_MARGIN = 1.5
+
+
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", text or "").replace("&nbsp;", " ").strip()
 
@@ -507,6 +517,17 @@ class Erp:
             ["name", "workcenter_id", "bom_id", "time_cycle_manual", "time_cycle"], limit=200)
         op_minutes = {o["id"]: (o.get("time_cycle_manual") or o.get("time_cycle") or 0.0)
                       for o in operations}
+        op_centre = {o["id"]: _id_of(o.get("workcenter_id")) for o in operations}
+
+        def rate(operation_id, centre_id) -> tuple[float | None, bool]:
+            """Minutes per unit at this centre, and whether that rate is stated."""
+            minutes = op_minutes.get(operation_id)
+            if not minutes:
+                return None, False
+            if op_centre.get(operation_id) == centre_id:
+                return minutes, True
+            return minutes * ALT_RATE_MARGIN, False
+
         committed: dict[int, float] = {}
         productions = {m["id"]: m for m in self.search_read(
             "mrp.production", [("state", "not in", ("cancel",))],
@@ -521,7 +542,7 @@ class Erp:
                 mo = productions.get(_id_of(wo.get("production_id")))
                 if wc is None or mo is None:
                     continue
-                per_unit = op_minutes.get(_id_of(wo.get("operation_id")))
+                per_unit, _stated = rate(_id_of(wo.get("operation_id")), wc)
                 minutes = (mo["product_qty"] or 0) * per_unit if per_unit else (wo.get("duration_expected") or 0)
                 committed[wc] = committed.get(wc, 0.0) + minutes
         return centres, operations, committed
@@ -547,6 +568,11 @@ class Erp:
                 product = _name_of(o.get("bom_id"))
                 ops_by_wc.setdefault(wc, []).append(
                     f"{product}: {o.get('time_cycle_manual') or o.get('time_cycle') or 0:g} min/unit")
+        for c in centres:
+            for alt in (c.get("alternative_workcenter_ids") or []):
+                for line in ops_by_wc.get(c["id"], []):
+                    ops_by_wc.setdefault(alt, []).append(
+                        f"(alternate for {c['name']}: rate not stated, assumed {ALT_RATE_MARGIN}x) {line}")
         names = {c["id"]: c["name"] for c in centres}
         rows = []
         for c in centres:
@@ -577,22 +603,26 @@ class Erp:
         for o in operations:
             if _id_of(o.get("bom_id")) != bom["id"]:
                 continue
-            minutes = o.get("time_cycle_manual") or o.get("time_cycle") or 0.0
+            stated = o.get("time_cycle_manual") or o.get("time_cycle") or 0.0
             primary = _id_of(o.get("workcenter_id"))
             for wc_id in [primary] + list((by_id.get(primary) or {}).get("alternative_workcenter_ids") or []):
                 c = by_id.get(wc_id)
                 if not c:
                     continue
+                is_primary = wc_id == primary
+                minutes = stated if is_primary else stated * ALT_RATE_MARGIN
                 limit = _minutes_limit(c.get("note") or "")
                 used = committed.get(wc_id, 0.0)
                 rows.append({
                     "workcenter_id": wc_id, "name": c["name"], "code": c.get("code") or "",
-                    "role": "primary" if wc_id == primary else "alternative",
-                    "min_per_unit": minutes, "cost_per_unit": round((c.get("costs_hour") or 0) * minutes / 60, 2),
+                    "role": "primary" if is_primary else "alternative",
+                    "min_per_unit": minutes,
+                    "rate": "stated" if is_primary else f"assumed {ALT_RATE_MARGIN}x primary (not stated)",
+                    "cost_per_unit": round((c.get("costs_hour") or 0) * minutes / 60, 2),
                     "minutes_limit": limit, "minutes_free": (round(limit - used, 1) if limit is not None else None),
                     "units_fit": (int((limit - used) // minutes) if limit is not None and minutes else None),
                 })
-        return Table(rows, ["workcenter_id", "name", "code", "role", "min_per_unit", "cost_per_unit",
+        return Table(rows, ["workcenter_id", "name", "code", "role", "min_per_unit", "rate", "cost_per_unit",
                             "minutes_limit", "minutes_free", "units_fit"], "work-centre options")
 
     def invoices(self, move_type: str = "out_invoice", state: str | None = None) -> Table:
