@@ -164,6 +164,25 @@ class ErpAgent(BaseAgent):
                     f"\n\n---\n\nAvailable in your Python kernel right now: **{names}**. "
                     "Nothing else is loaded — do not call modules that are not on this list.")
 
+            if kernel is not None and "check" in self.lib_active:
+                # Checks that already fail on the untouched scenario are recorded so the
+                # finish gate holds the agent to what it changed, not to what it inherited.
+                reply = kernel.run(
+                    "from lib.finish import record_baseline as _rb\n"
+                    "print(_rb())", timeout=180)
+                if reply.get("ok"):
+                    self.logger.info("check baseline: %s", reply.get("stdout", "").strip())
+                else:
+                    self.logger.warning("baseline failed: %s", reply.get("stderr", "")[:200])
+
+            briefing = ""
+            if self.config.get("briefing") and kernel is not None and "brief" in self.lib_active:
+                reply = kernel.run("print(brief())", timeout=180)
+                if reply.get("ok") and reply.get("stdout", "").strip():
+                    briefing = reply["stdout"].strip()
+                else:
+                    self.logger.warning("briefing failed: %s", reply.get("stderr", "")[:200])
+
             dispatch = self._make_dispatch(container, kernel)
             agent_loop = Loop(
                 llm=llm,
@@ -176,7 +195,7 @@ class ErpAgent(BaseAgent):
                 token_cap=self.config.get("token_cap", 1_500_000),
                 ledger_k=self.config.get("ledger_k", 0),
                 ledger_summary=self._ledger_summary(kernel) if kernel else None,
-                briefing="",
+                briefing=briefing,
                 logger=self.logger,
             )
             result = agent_loop.run()

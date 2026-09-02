@@ -819,6 +819,31 @@ Two decisions PLAN.md ties to this measurement:
   BOM arithmetic) first, then state snapshots + dry run, then the briefing. `db.py` and
   `delegate` address no observed failure and move last.
 
+## Why v0 lost, and what changed (2026-09-02)
+
+The first valid-ish C_full dev40 trajectories (27 not killed by the in-flight 402s) paired
+against config A on the same tasks: **33% vs 41% pass, 49.2 vs 54.7 reward, 50.5 vs 29.2
+steps, $0.84 vs $0.66**. 11 passes to 9 — a two-task gap, but the wrong direction on every
+axis. Every cause below was found in those trajectories and fixed without another paid run.
+
+| # | defect | evidence | fix |
+|---|---|---|---|
+| 1 | **Cache breakpoint never moved** | C_full cached tokens frozen at exactly 3,968 (the system block) while context grew to 17,648: hit rate 76%→22%. pi: 91–98%, because its marker sits on the *last* message | `llm.apply_cache_control` copies pi-mono's `applyAnthropicCacheControl`: system prompt, last tool def, last conversation message, on a per-request copy. Re-measured live: **~72%** mean hit rate |
+| 2 | **Finish gate never refused** | 19 finish calls, **0 refusals**. v0's invariants covered drafts/stock/supplier/invoicing — things P1.4 coded zero failures for — and not the 74% TIMELINE mode | Appendix B items 2, 5, 6: `demand_covered`, `timeline_feasible`, `mo_feasible`. All 14 shared failures have rules these map to. Refusals now say *how to fix* |
+| 3 | **Contract named tools that did not exist** | 31 `NameError`s (`state` ×20, `db` ×11); contract step 3 impossible | `lib/state.py` (TEMPLATE snapshots, RPC-reachable, isolated) and `lib/db.py` (Postgres-enforced read-only) built; `agent.py` appends the modules actually loaded |
+| 4 | **token_cap truncated work** | bound on 9/40 while the uncapped baseline averaged 1.20M | 1.5M → 3M, above config A's eval100 p90 |
+| 5 | **Kernel transport dropped requests** | `docker compose cp failed` ×39, 34 in one trial; a **reward-98.0 trial lost its finish** to it and burned 20 more steps | requests travel base64 inline in the command line, 3 attempts; `finish` retried by the harness |
+| 6 | **Kernel timeout destroyed state mid-plan** | `plan_fn(erp)` for five customers over XML-RPC exceeded 120s; namespace rebuilt; model redid everything step by step | 120s → 600s |
+| 7 | **39 read calls per trial before writing** | exploration the model repeats every task | `lib/brief.py`: products, vendor offers with lead times and notes, BOMs, open orders — ~1.9k tokens in the first user message |
+| 8 | **Gate would refuse over inherited conditions** | found by the end-to-end test on a dirty container; seeded scenarios ship with orders | `finish.record_baseline()` at task start: pre-existing failures are reported, never block |
+| 9 | **`lib: []` collapsed to "ship everything"**; stale modules survived reinstall | B_bash smoke ran the full library | empty list respected; install clears the directory |
+
+What is verified: 1 (live probe), 2 (live tests seed each violation; one drives the real
+`ErpAgent` path — seeded late PO → `finish refused` naming both dates and a fix → date
+moved → accepted), 3–9 (tests). What is **not** verified and decides the result: whether the
+model acts usefully on a refusal. The pre-registered $4 dev5 checkpoint tests exactly that:
+cache ≥ 60%, ≥1 refusal subsequently resolved, 0 NameErrors, 0 api_errors.
+
 ## Freeze
 
 *(P3.7)*

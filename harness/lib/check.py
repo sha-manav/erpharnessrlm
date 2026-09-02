@@ -260,7 +260,11 @@ def _timeline_feasible(client) -> tuple[bool, str]:
     if late:
         shown = "; ".join(late[:5])
         more = f" (+{len(late) - 5} more)" if len(late) > 5 else ""
-        return False, f"{len(late)} receipt(s) land after the demand they feed: {shown}{more}"
+        return False, (
+            f"{len(late)} receipt(s) land after the demand they feed: {shown}{more}. "
+            "Fix: set the PO line's date_planned no later than the need date if the vendor's "
+            "delay allows (order date + delay <= need date), otherwise source from a vendor "
+            "with a shorter delay, or from stock/manufacturing; erp.suppliers() lists delays.")
     return True, f"every outstanding receipt lands on or before its need date ({len(need_by)} product(s))"
 
 
@@ -324,7 +328,11 @@ def _mo_feasible(client) -> tuple[bool, str]:
     if problems:
         shown = "; ".join(problems[:5])
         more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
-        return False, f"{len(problems)} component shortfall(s): {shown}{more}"
+        return False, (
+            f"{len(problems)} component shortfall(s): {shown}{more}. "
+            "Fix: buy the missing components with a receipt landing on or before the MO's "
+            "date_start, or move date_start later than the component receipt, or build the "
+            "component first if it has a BOM.")
     return True, f"every unfinished MO's components are covered ({len(productions)} MO(s))"
 
 

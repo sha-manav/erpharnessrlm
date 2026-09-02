@@ -24,12 +24,12 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
 - P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
 - P2.8 agent.py (Harbor)      | done   | 2026-09-02 | C_full and B_bash dev5 smokes both complete cleanly (finish:5); 6 bugs found and fixed via smokes
-- P2.9 v0 smoke + dev point   | blocked| 2026-09-02 | both dev40 runs INVALID (32.5% and 55% api_error from in-flight 402s); fix shipped; needs ~$100 credit to redo
+- P2.9 v0 smoke + dev point   | ready  | 2026-09-02 | v0 lost (paired 33% vs 41%); 9 defects diagnosed from trajectories and fixed (NOTES ## Why v0 lost); awaiting credit for the $4 dev5 checkpoint then dev40
 
 ## Phase 3 — Harness v1
 - P3.1 lib/db.py              | done   | 2026-09-02 | read-only SQL enforced by a Postgres ro_agent role, not by string matching; 5 live tests
 - P3.2 lib/state.py           | done   | 2026-09-02 | CREATE DATABASE TEMPLATE snapshots reachable over RPC, isolated from main; diff/list/drop; 4 live tests
-- P3.3 prompts/briefing.py    | todo   |            |
+- P3.3 prompts/briefing.py    | done   | 2026-09-02 | lib/brief.py: per-section budgets, ~1.9k tokens, generic queries; injected into the first user message
 - P3.4 lib/delegate.py        | todo   |            |
 - P3.5 Remaining invariants   | part   | 2026-09-02 | items 2/5/6 promoted early (74% of failures): demand_covered, timeline_feasible, mo_feasible. Items 8/9/10 remain
 - P3.6 Efficiency audit       | todo   |            |

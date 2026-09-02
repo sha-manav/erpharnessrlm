@@ -354,7 +354,10 @@ def test_an_on_time_receipt_passes(erp, offer):
                           date_planned="2026-10-01 12:00:00")     # comfortably early
     erp.confirm_po(po_id)
     try:
-        assert status_of(check.invariants(erp), "timeline_feasible") == "pass"
+        table = check.invariants(erp)
+        po_name = erp.purchase_orders(ids=[po_id]).all()[0]["name"]
+        # Other tests may have left late orders behind; this receipt must not be one of them.
+        assert po_name not in evidence_of(table, "timeline_feasible"), evidence_of(table, "timeline_feasible")
     finally:
         erp.cancel("purchase.order", po_id)
         erp.cancel("sale.order", so_id)
@@ -433,3 +436,23 @@ def test_the_gate_now_refuses_on_a_late_receipt(erp, offer, tmp_path):
     finally:
         erp.cancel("purchase.order", po_id)
         erp.cancel("sale.order", so_id)
+
+
+def test_preexisting_failures_are_reported_but_do_not_block(erp, offer, tmp_path):
+    """Seeded scenarios can violate an invariant on arrival; that must not burn the gate."""
+    from lib import check, finish as finish_module
+    from lib.check import Rule
+
+    finish_module.SUMMARY_PATH = str(tmp_path / "summary.md")
+    check.register(Rule("inherited", "already broken when we arrived", lambda c: (False, "seeded")))
+    finish_module.set_baseline(["inherited"])
+    result = finish_module.finish("done", client=erp)
+    assert finish_module.FINISH_SENTINEL in result
+    assert "pre-existing" in (tmp_path / "summary.md").read_text()
+
+    # A NEW failure is still refused, baseline or not.
+    finish_module.reset()
+    finish_module.set_baseline(["inherited"])
+    check.register(Rule("fresh", "caused by the agent", lambda c: (False, "new")))
+    result = finish_module.finish("done", client=erp)
+    assert "finish refused" in result and "fresh" in result

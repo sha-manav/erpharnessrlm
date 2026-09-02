@@ -54,14 +54,14 @@ B_bash:
 C_full:
   tools: [python, bash, show, finish]
   prompts: [contract, playbook, schema_card, library_docs]
-  lib: [erp, db, state, check, plan]
+  lib: [erp, db, state, check, plan, brief]
   briefing: true
   ledger_k: 15
   finish_gate: true
 
 C_minus_dry:
   inherit: C_full
-  lib: [erp, db, plan]
+  lib: [erp, db, plan, brief]
   finish_gate: false
 
 C_minus_doc:
@@ -76,6 +76,7 @@ C_minus_del:
 C_minus_brief:
   inherit: C_full
   briefing: false
+  lib: [erp, db, state, check, plan]
 
 B_plus_doc:
   inherit: B_bash

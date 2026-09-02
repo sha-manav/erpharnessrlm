@@ -26,13 +26,36 @@ FINISH_SENTINEL = "__ERP_HARNESS_FINISHED__"
 MAX_REFUSALS = 3
 SUMMARY_PATH = os.environ.get("ERP_SUMMARY_PATH", "/output/summary.md")
 
-_state = {"refusals": 0, "finished": False}
+_state = {"refusals": 0, "finished": False, "baseline": set()}
 
 
 def reset() -> None:
     """Start a fresh episode (used by tests and by the agent at task start)."""
     _state["refusals"] = 0
     _state["finished"] = False
+    _state["baseline"] = set()
+
+
+def set_baseline(failing_ids) -> list[str]:
+    """Record checks that were already failing before the agent acted.
+
+    Seeded scenarios ship with pre-existing orders, and some of those violate an
+    invariant on arrival. Refusing `finish` over a condition the agent did not cause and
+    cannot be expected to repair burns its attempts on nothing, so those are reported but
+    never block. Everything the agent touches is still held to every check.
+    """
+    _state["baseline"] = set(failing_ids)
+    return sorted(_state["baseline"])
+
+
+def record_baseline(client=None) -> list[str]:
+    """Run the invariants now and remember which already fail. Called at task start."""
+    try:
+        from . import check as check_module
+    except ImportError:
+        return set_baseline([])
+    table = check_module.invariants(client)
+    return set_baseline(r["check"] for r in table.all() if r["status"] == "FAIL")
 
 
 def refusals() -> int:
@@ -65,11 +88,16 @@ def finish(summary: str = "", client=None, gate: bool = True) -> str:
 
     if check_module is None:
         checks_text = "(no checks in this configuration)"
-        failing = []
+        failing, preexisting = [], []
     else:
         table = check_module.all(client)
         checks_text = str(table)
-        failing = [r for r in table.all() if r["status"] == "FAIL" and r["hard"] == "hard"]
+        hard_fails = [r for r in table.all() if r["status"] == "FAIL" and r["hard"] == "hard"]
+        preexisting = [r for r in hard_fails if r["check"] in _state["baseline"]]
+        failing = [r for r in hard_fails if r["check"] not in _state["baseline"]]
+        if preexisting:
+            checks_text += "\n(pre-existing at task start, not blocking: " + \
+                ", ".join(r["check"] for r in preexisting) + ")"
 
     if gate and failing and _state["refusals"] < MAX_REFUSALS - 1:
         _state["refusals"] += 1

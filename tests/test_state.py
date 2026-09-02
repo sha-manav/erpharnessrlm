@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "harness"))
 
 pytestmark = pytest.mark.live
 
@@ -20,7 +21,7 @@ def kernel(dev_container_name):
     from harness.container import DockerContainer, Kernel
 
     container = DockerContainer(dev_container_name)
-    kern = Kernel(container, port=8810, lib_modules=["erp", "db", "state", "check", "plan"])
+    kern = Kernel(container, port=8810, lib_modules=["erp", "db", "state", "check", "plan", "brief"])
     kern.start(env={
         "ODOO_URL": "http://127.0.0.1:8069", "ODOO_DB": "bench", "ODOO_USER": "admin",
         "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGUSER": "odoo",
@@ -117,3 +118,17 @@ except ValueError as exc:
     print("refused:", exc)
 """)
     assert "refused:" in out and "NOT REFUSED" not in out
+
+
+# -- brief.py -----------------------------------------------------------------
+def test_briefing_renders_within_budget_without_raising(kernel):
+    """Front-loads what every plan starts from; must never sink a trial and must stay small."""
+    out = run(kernel, """
+text = brief()
+print(len(text))
+print('Vendor offers' in text, 'Products' in text, 'Bills of materials' in text)
+""", timeout=180)
+    lines = out.strip().splitlines()
+    from lib.brief import CHAR_BUDGET  # noqa: PLC0415
+    assert int(lines[0]) <= CHAR_BUDGET + 100, f"briefing is {lines[0]} chars, over budget"
+    assert lines[1] == "True True True"

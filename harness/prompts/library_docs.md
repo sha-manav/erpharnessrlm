@@ -76,6 +76,8 @@ A task ledger the agent maintains and the loop re-injects (PLAN.md P2.5).
 The finish tool, and the gate in front of it (PLAN.md P2.4).
 
 - `reset()` — Start a fresh episode (used by tests and by the agent at task start).
+- `set_baseline(failing_ids)` — Record checks that were already failing before the agent acted.
+- `record_baseline(client=None)` — Run the invariants now and remember which already fail. Called at task start.
 - `refusals()`
 - `finish(summary='', client=None, gate=True)` — End the episode, if the hard checks agree.
 
@@ -121,3 +123,9 @@ Tables and paging — the layer that keeps context from exploding (PLAN.md P2.2)
 
 - `show(handle, page=1)` — Return one page of a stored oversized output.
 - `paginate(text)` — Store `text` if it is oversized and return what the model should see.
+
+## `brief`
+
+The environment briefing rendered into the first user message (PLAN.md P3.3).
+
+- `render(client=None, char_budget=CHAR_BUDGET)` — Return the briefing text. Never raises: a section that fails says so and moves on.
