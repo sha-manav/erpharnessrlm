@@ -29,7 +29,11 @@ defaults:
   # above config A's eval100 p90 (2.37M) and still bounds a runaway.
   token_cap: 3000000
   bash_timeout_s: 120
-  kernel_timeout_s: 120
+  # 120s destroyed a trial's state mid-execution: `plan_fn(erp)` creating sales orders,
+  # MOs and POs for five customers over XML-RPC runs for minutes, the kernel timed out
+  # and rebuilt its namespace, and the model had to redo everything step by step. The
+  # cap exists to catch a hung call, not a long one.
+  kernel_timeout_s: 600
   finish_gate: false
   ledger_k: 0
   briefing: false

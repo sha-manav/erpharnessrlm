@@ -143,3 +143,27 @@ def test_a_stale_export_name_does_not_lose_the_module(container, tmp_path):
     finally:
         kern.stop()
         container.exec("rm -rf /harness/lib")
+
+
+def test_a_large_request_travels_inline(kernel):
+    """Requests travel base64 in the command line now — no file staging to fail.
+
+    The largest agent code block seen in a real run was 28 KB; this sends 60 KB to leave
+    margin, and checks both directions survive intact.
+    """
+    big = "x = '" + ("a" * 60_000) + "'\nprint(len(x))"
+    reply = kernel.run(big)
+    assert reply["ok"], reply["stderr"]
+    assert reply["stdout"].strip() == "60000"
+
+
+def test_transport_failure_is_reported_not_raised(container):
+    """A kernel that is not there yields a labelled reply, after retries, never an exception."""
+    from harness.container import Kernel
+
+    kern = Kernel(container, port=8899, lib_modules=[])   # nothing listening on 8899
+    kern.TRANSPORT_ATTEMPTS = 1
+    reply = kern.run("print(1)", timeout=10)
+    assert reply["ok"] is False
+    assert reply.get("transport_failure") is True
+    assert "kernel" in reply["stderr"]

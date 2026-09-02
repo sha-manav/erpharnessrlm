@@ -260,7 +260,16 @@ class ErpAgent(BaseAgent):
                     "from lib.finish import finish as _finish\n"
                     f"print(_finish({summary}, gate={gate}))\n"
                 )
-                return self._render_kernel(kernel.run(code, timeout=kernel_timeout))
+                # A finish lost to a transport hiccup cost a reward-98 trial its finish and
+                # twenty more steps of token burn. The model's intent here is unambiguous,
+                # so a transport failure is retried by the harness rather than handed back.
+                reply = None
+                for _ in range(3):
+                    reply = kernel.run(code, timeout=kernel_timeout)
+                    if not reply.get("transport_failure"):
+                        break
+                    time.sleep(3)
+                return self._render_kernel(reply)
 
             return f"unknown tool {name!r}"
 

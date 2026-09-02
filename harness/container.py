@@ -308,19 +308,54 @@ class Kernel:
         self.started = False
 
     # -- calls ----------------------------------------------------------------
+    TRANSPORT_ATTEMPTS = 3
+
     def _request(self, payload: dict, timeout: int = 180) -> dict:
-        result = self.container.exec(
-            f"python3 {self.REMOTE_SERVER} --client --port {self.port}",
-            stdin=json.dumps(payload),
-            timeout=timeout,
-        )
-        text = result.stdout.strip()
-        if not text:
-            return {"ok": False, "stdout": "", "stderr": result.stderr.strip() or "no reply"}
-        try:
-            return json.loads(text.splitlines()[-1])
-        except ValueError:
-            return {"ok": False, "stdout": "", "stderr": f"unparsable kernel reply: {text[:500]}"}
+        """Send one request to the kernel and return its reply.
+
+        The request travels base64-encoded *inside the command line*, not as a staged
+        file. The earlier design uploaded a temp file per call through Harbor's
+        `upload_file`, which shells out to `docker compose cp` -- and under load that
+        failed 39 times across one dev40 run, 34 of them in a single trial, which it
+        destroyed. Linux ARG_MAX is ~2 MB and the largest agent code block seen so far is
+        28 KB, so the command line has ample room and no second process to fail.
+
+        Transport-level failures (no reply, unparsable reply, exec error) are retried;
+        a reply that the kernel itself produced -- including a code error -- is returned
+        as-is, since retrying it would re-run the agent's code.
+        """
+        import base64
+
+        encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+        cmd = (f"echo {encoded} | base64 -d | "
+               f"python3 {self.REMOTE_SERVER} --client --port {self.port}")
+        last = ""
+        for attempt in range(1, self.TRANSPORT_ATTEMPTS + 1):
+            try:
+                result = self.container.exec(cmd, timeout=timeout)
+            except Exception as exc:  # noqa: BLE001 - exec itself can raise on transport
+                last = f"exec raised {type(exc).__name__}: {exc}"
+                result = None
+            if result is not None:
+                text = result.stdout.strip()
+                if text:
+                    try:
+                        reply = json.loads(text.splitlines()[-1])
+                    except ValueError:
+                        last = f"unparsable kernel reply: {text[:300]}"
+                    else:
+                        # The client relay reports its own connection failure as a reply;
+                        # that is still transport, and still worth a retry.
+                        if str(reply.get("stderr", "")).startswith("kernel unreachable"):
+                            last = reply["stderr"]
+                        else:
+                            return reply
+                else:
+                    last = result.stderr.strip() or "no reply"
+            if attempt < self.TRANSPORT_ATTEMPTS:
+                time.sleep(2 * attempt)
+        return {"ok": False, "stdout": "", "stderr": f"kernel transport failed: {last}",
+                "transport_failure": True}
 
     def run(self, code: str, timeout: int = 120, ns: str = "root") -> dict:
         """Execute `code` in the persistent namespace `ns`.
