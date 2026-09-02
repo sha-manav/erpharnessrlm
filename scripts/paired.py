@@ -39,8 +39,14 @@ def load(run_dir: Path) -> dict[str, dict]:
     if not out:
         for path in run_dir.glob("jobs/*/*/verifier/reward.json"):
             d = json.loads(path.read_text())
-            result = json.loads((path.parent.parent / "result.json").read_text())
-            task = (result.get("task_name") or "").split("/")[-1]
+            # Harbor writes reward.json before the trial's result.json; while live, fall
+            # back to the trial directory name (<task>__<suffix>).
+            result_path = path.parent.parent / "result.json"
+            if result_path.exists():
+                result = json.loads(result_path.read_text())
+                task = (result.get("task_name") or "").split("/")[-1]
+            else:
+                task = path.parent.parent.name.rsplit("__", 1)[0]
             if task:
                 out[task] = {"pass": bool(d.get("passed")), "reward": d.get("overall_score", 0.0),
                              "steps": None, "cost": None, "terminal": "?"}
