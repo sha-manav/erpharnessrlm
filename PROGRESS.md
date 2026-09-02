@@ -23,8 +23,8 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.5 lib/plan.py            | done   | 2026-09-01 | ledger with bounded summary for reinjection; 9 unit tests
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
 - P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
-- P2.8 agent.py (Harbor)      | doing  | 2026-09-02 | implemented; smoke found 4 bugs (lib plumbing, check EXPORTS, connection resets, max_tokens truncation); 4th smoke running
-- P2.9 v0 smoke + dev point   | todo   |            |
+- P2.8 agent.py (Harbor)      | done   | 2026-09-02 | C_full and B_bash dev5 smokes both complete cleanly (finish:5); 6 bugs found and fixed via smokes
+- P2.9 v0 smoke + dev point   | blocked| 2026-09-02 | both dev40 runs INVALID (32.5% and 55% api_error from in-flight 402s); fix shipped; needs ~$100 credit to redo
 
 ## Phase 3 — Harness v1
 - P3.1 lib/db.py              | todo   |            |

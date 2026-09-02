@@ -123,7 +123,8 @@ def preflight_model(model: dict, api_key: str) -> dict:
     return {"reachable": True, "provider": provider}
 
 
-def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool) -> dict:
+def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool,
+                     n_concurrent: int = 1) -> dict:
     """Refuse to start a run the account cannot pay for.
 
     Learned the hard way: a run that exhausts its balance mid-flight does not fail loudly.
@@ -141,22 +142,30 @@ def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool) -
     balance = openrouter_balance(api_key)
     per_trial = model.get("est_cost_per_trial_usd", 0.35)
     needed = n_tasks * per_trial
-    floor = 5.0  # headroom for max_tokens reservation on the last few calls
+    # OpenRouter holds a reservation per *in-flight* request against its maximum possible
+    # size, so a run can be refused with HTTP 402 while its expected spend is affordable.
+    # Two dev40 runs at 18 concurrent burned ~$50 and returned 32% and 55% api_error for
+    # exactly this reason. Budget for the concurrency, not only for the mean.
+    in_flight = n_concurrent * model.get("in_flight_reservation_usd", 2.0)
+    floor = 5.0
     report = {
         "checked": True,
         "balance_usd": balance,
         "estimated_usd": round(needed, 2),
-        "required_usd": round(max(needed * 1.2, needed + floor), 2),
+        "in_flight_reserve_usd": round(in_flight, 2),
+        "required_usd": round(max(needed * 1.2, needed + floor, needed + in_flight), 2),
     }
     if balance is None:
         print("warning: could not read the OpenRouter balance; continuing unchecked")
         return report
-    print(f"credit: ${balance:.2f} available, ~${needed:.2f} estimated for {n_tasks} trials")
+    print(f"credit: ${balance:.2f} available, ~${needed:.2f} estimated for {n_tasks} "
+          f"trials, ~${in_flight:.2f} held for {n_concurrent} in flight")
     if balance < report["required_usd"] and not allow_low:
         raise SystemExit(
             f"refusing to start: ${balance:.2f} available but ${report['required_usd']:.2f} "
-            f"needed for {n_tasks} trials at ~${per_trial:.2f} each (plus ${floor:.0f} of "
-            "headroom, because OpenRouter reserves credit for the requested max_tokens).\n"
+            f"needed for {n_tasks} trials at ~${per_trial:.2f} each, including "
+            f"~${in_flight:.2f} held against {n_concurrent} in-flight requests "
+            "(OpenRouter reserves per request, so concurrency needs headroom of its own).\n"
             "Add credits at https://openrouter.ai/settings/credits, or pass --allow-low-credit "
             "to run anyway and accept that trials may die with HTTP 402."
         )
@@ -271,7 +280,8 @@ def main() -> int:
             "Only dev40 needs the big model."
         )
     reachability = preflight_model(model, api_key)
-    credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit)
+    credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit,
+                              args.n_concurrent)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"{args.config}__{args.model}__{args.alias or args.set}__{stamp}"
