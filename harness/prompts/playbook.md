@@ -116,9 +116,11 @@ erp.earliest_build(product_id, qty, need_by=due) # with a due date: components s
                                                   # the fastest
 ```
 
-Buy exactly the shortfall (`needed - free_now`), split the way `cheapest_buy` says: a plan
-that met every constraint still lost on spend alone for buying 66 + 7 where 63 + 10 was
-cheaper, and 74 where 73 was needed.
+Buy exactly the shortfall (`needed - free_now`), split the way `cheapest_buy` says —
+**every purchase line comes from `cheapest_buy`, never from picking rows off the
+`feasible_vendors` table by hand**: two plans that met every constraint lost on spend
+alone (66 + 7 where 63 + 10 was cheaper; 0.35% over on a hand-picked split). Pass the
+MO's start as `need_by` for components (`earliest_build(..., need_by=)` does this).
 
 An empty `feasible_vendors` table means no listed vendor can make the date — cover the
 demand from stock or manufacturing, or say so in the summary. Never invent a

@@ -684,9 +684,14 @@ class Erp:
                 "vendor_notes": offer["vendor_notes"],
             })
         rows.sort(key=lambda r: (r["line_total"], -r["slack_days"]))
+        # The exact min-cost split (tiers, MOQ, note-stated maxima) is one call away and
+        # is what the spend score is measured against; a plan that picked by hand from
+        # this table lost 0.35% on spend with every constraint met.
         return Table(rows, ["vendor_id", "vendor", "price", "min_qty", "order_qty",
                             "delay_days", "arrives", "slack_days", "line_total", "vendor_notes"],
-                     f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]}")
+                     f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]} — "
+                     f"for the PO lines to write, use erp.cheapest_buy({product_id}, {qty:g}, "
+                     f"{need_by[:10]!r}) (min-cost split across these offers)")
 
     def cheapest_buy(self, product_id: int, qty: float, need_by: str | None = None,
                      order_date: str | None = None) -> Table:
