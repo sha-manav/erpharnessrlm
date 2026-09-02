@@ -43,7 +43,12 @@ big:
   # 46% (61% after the two cold-start writes), and a full dev5 trial routed entirely to
   # Chutes cached 39% where pi -- which lands on GMICloud 9 times in 10 -- caches 83%. A
   # cheap cache read is worth nothing if the read never happens.
-  provider_routing: {only: [gmicloud], allow_fallbacks: false, quantizations: [fp8]}
+  # GMICloud first (80% cache hits measured); Baidu and StreamLake are fp8 at the same price
+  # and take over only when a GMICloud request fails. 2026-09-02: two dev40 launches died to
+  # connection resets on a single-provider pin; the same day all three completed long
+  # (7-12k token) requests cleanly. `order` makes the list a preference, not a pool.
+  provider_routing: {order: [gmicloud, baidu, streamlake], only: [gmicloud, baidu, streamlake],
+                     allow_fallbacks: false, quantizations: [fp8]}
   est_cost_per_trial_usd: 0.73     # measured over 49 eval100 trials of config A (dev5's $0.23 was
                                    # unrepresentative: dev5 is the five easiest patterns)
 
