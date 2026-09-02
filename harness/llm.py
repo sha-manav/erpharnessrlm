@@ -20,6 +20,7 @@ Retries: exponential backoff on 429 and 5xx, five attempts, then the caller reco
 
 from __future__ import annotations
 
+import http.client
 import json
 import random
 import time
@@ -159,7 +160,12 @@ class LLM:
                 last_error = f"HTTP {exc.code}: {detail}"
                 if exc.code not in RETRY_STATUS:
                     raise LLMError(last_error) from None
-            except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            except (OSError, http.client.HTTPException, ValueError) as exc:
+                # OSError deliberately, not just URLError: with several long-running
+                # requests in flight the socket is reset often enough that a bare
+                # ConnectionResetError killed whole trajectories -- including two that had
+                # already finished their work and scored 100. urllib.error.URLError is
+                # itself an OSError, so this widens the net rather than replacing it.
                 last_error = f"{type(exc).__name__}: {exc}"
 
             if attempt < MAX_ATTEMPTS:

@@ -309,3 +309,43 @@ def test_tool_call_arguments_are_repaired_before_being_echoed(tmp_path):
     assert json.loads(echoed["tool_calls"][0]["function"]["arguments"]) == {"code": "x"}
     assert echoed["tool_calls"][1]["function"]["arguments"] == "{}"
     assert echoed["tool_calls"][2]["function"]["arguments"] == "{}"
+
+
+def test_connection_reset_is_retried_not_fatal(tmp_path, monkeypatch):
+    """A reset socket must cost a retry, not the trajectory.
+
+    Observed live: ConnectionResetError escaped llm.complete and ended four of five
+    smoke trials, two of which had already done the work and scored 100.
+    """
+    import harness.llm as llm_module
+
+    attempts = {"n": 0}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"role": "assistant", "content": "ok"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                "provider": "Fake",
+            }).encode()
+
+    def fake_urlopen(request, timeout=None):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionResetError(54, "Connection reset by peer")
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _s: None)
+
+    client = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "key")
+    reply = client.complete([{"role": "user", "content": "hi"}])
+    assert reply.text == "ok"
+    assert attempts["n"] == 3          # two resets absorbed, third attempt succeeded
