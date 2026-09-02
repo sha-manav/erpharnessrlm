@@ -423,7 +423,7 @@ def test_an_mo_without_components_is_detected(erp):
     try:
         table = check.invariants(erp)
         assert status_of(table, "mo_feasible") == "FAIL"
-        assert "needs" in evidence_of(table, "mo_feasible")
+        assert "needing" in evidence_of(table, "mo_feasible")
     finally:
         erp.cancel("mrp.production", mo_id)
 
@@ -528,3 +528,151 @@ def test_a_forced_early_receipt_is_refused_at_finish(erp, tmp_path):
         assert "finish refused" in result and "no_fabricated_receipts" in result
     finally:
         erp.cancel("purchase.order", po_id)
+
+
+def test_an_origin_naming_an_order_the_purchase_cannot_reach_is_detected(erp, offer):
+    """Pass 3 of the checkpoint: every date right, origin listing an order due before the
+    goods land. The benchmark's schedule rule reads origin as "the demand this feeds"."""
+    from lib import check
+    from lib.erp import _add_days
+
+    if (offer["delay_days"] or 0) < 2:
+        pytest.skip("need a vendor with a 2+ day lead time")
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    today = erp.today()
+    arrival = _add_days(today, offer["delay_days"])
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": _add_days(today, 1),   # due tomorrow
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 1})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    so_name = erp.get("sale.order", [so_id], ["name"])[0]["name"]
+    po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 1))],
+                          date_planned=arrival, origin=so_name, force=True)   # bypass the guard
+    erp.confirm_po(po_id)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "origin_consistent") == "FAIL"
+        evidence = evidence_of(table, "origin_consistent")
+        assert so_name in evidence and "cannot" not in evidence[:0] and "Fix" in evidence
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)
+
+
+def test_an_origin_naming_an_order_the_purchase_reaches_passes(erp, offer):
+    from lib import check
+    from lib.erp import _add_days
+
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    today = erp.today()
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": _add_days(today, 60),
+        "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 1})],
+    }])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    so_name = erp.get("sale.order", [so_id], ["name"])[0]["name"]
+    po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 1))],
+                          date_planned=_add_days(today, max(offer["delay_days"] or 0, 1)),
+                          origin=so_name)
+    erp.confirm_po(po_id)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "origin_consistent") == "pass"
+    finally:
+        erp.cancel("purchase.order", po_id)
+        erp.cancel("sale.order", so_id)
+
+
+@pytest.fixture(scope="module")
+def made(erp):
+    """A product with a BOM that has operations (a make scenario); skip on buy-only devboxes."""
+    boms = erp.search_read("mrp.bom", [("operation_ids", "!=", False)], ["product_tmpl_id"], limit=1)
+    if not boms:
+        pytest.skip("this devbox scenario has no BOM with operations (start one with ERP_DEV_TASK=<make task>)")
+    pid = erp.search_read("product.product", [("product_tmpl_id", "=", boms[0]["product_tmpl_id"][0])],
+                          ["id"], limit=1)[0]["id"]
+    return pid
+
+
+def test_an_mo_without_a_deadline_is_detected(erp, made):
+    """Odoo leaves date_deadline empty; the grader of any plan needs it."""
+    from lib import check
+
+    mo = erp.call("mrp.production", "create", [{"product_id": made, "product_qty": 1,
+                                                "date_start": "2026-10-01 08:00:00", "origin": "S00001"}])
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "mo_schedule") == "FAIL"
+        assert "no date_deadline" in evidence_of(table, "mo_schedule")
+    finally:
+        erp.cancel("mrp.production", mo)
+
+
+def test_an_mo_created_by_the_helper_is_schedulable(erp, made):
+    from lib import check
+
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": "2026-12-01 08:00:00",
+        "order_line": [(0, 0, {"product_id": made, "product_uom_qty": 1})]}])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    so_name = erp.get("sale.order", [so_id], ["name"])[0]["name"]
+    plan = erp.earliest_build(made, 1)
+    mo = erp.create_mo(made, 1, date_start=plan["date_start"], origin=so_name,
+                       workcenter_id=plan["workcenters"][0]["workcenter_id"], force=True)
+    try:
+        row = erp.get("mrp.production", [mo], ["date_deadline", "origin"])[0]
+        assert row["date_deadline"][:10] == plan["date_deadline"][:10] and row["origin"] == so_name
+        table = check.invariants(erp)
+        assert status_of(table, "mo_schedule") == "pass"
+        assert status_of(table, "origin_consistent") == "pass", evidence_of(table, "origin_consistent")
+    finally:
+        erp.cancel("mrp.production", mo)
+        erp.cancel("sale.order", so_id)
+
+
+def test_a_work_centre_booked_past_its_limit_is_detected(erp, made):
+    from lib import check
+
+    options = erp.workcenter_options(made).all()
+    limited = [o for o in options if o["minutes_limit"]]
+    if not limited:
+        pytest.skip("no work centre states a minute limit")
+    o = limited[0]
+    too_many = int(o["minutes_limit"] // o["min_per_unit"]) + 5
+    mo = erp.create_mo(made, too_many, date_start="2026-10-01 08:00:00",
+                       workcenter_id=o["workcenter_id"], force=True)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "workcenter_capacity") == "FAIL"
+        assert o["name"] in evidence_of(table, "workcenter_capacity")
+    finally:
+        erp.cancel("mrp.production", mo)
+
+
+def test_component_shortage_is_simulated_in_start_order(erp, made):
+    """Two MOs sharing components cannot both count the same units."""
+    from lib import check
+
+    plan = erp.earliest_build(made, 1)
+    comps = [c for c in plan["components"] if c["free_now"] > 0]
+    if not comps:
+        pytest.skip("no component on hand to share")
+    # Enough to exhaust the scarcest on-hand component twice over.
+    scarce = min(comps, key=lambda c: c["free_now"] / max(c["needed"], 1e-9))
+    qty = int(scarce["free_now"] / max(scarce["needed"], 1e-9)) + 1
+    a = erp.create_mo(made, qty, date_start="2026-10-01 08:00:00", force=True)
+    b = erp.create_mo(made, qty, date_start="2026-10-02 08:00:00", force=True)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "mo_feasible") == "FAIL"
+        assert "on hand by then" in evidence_of(table, "mo_feasible")
+    finally:
+        erp.cancel("mrp.production", a)
+        erp.cancel("mrp.production", b)

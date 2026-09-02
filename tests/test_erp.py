@@ -106,7 +106,7 @@ def test_po_create_confirm_receive_moves_stock(erp, catalogue):
     qty = max(catalogue["min_qty"], 1)
 
     before = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id])}
-    po_id = erp.create_po(catalogue["vendor_id"], [(product_id, qty)], origin="test-po")
+    po_id = erp.create_po(catalogue["vendor_id"], [(product_id, qty)])
     assert isinstance(po_id, int)
 
     # price_unit was filled from supplierinfo even though we did not pass one.
@@ -412,3 +412,89 @@ def test_downpayment_invoice(erp, catalogue):
 def test_workcenters_is_a_table(erp):
     table = erp.workcenters()
     assert "name" in table.cols
+
+
+def test_create_po_refuses_an_origin_it_cannot_feed(erp):
+    """origin = the demand this purchase feeds. Naming an order due before the goods land,
+    or a reference that is not an order at all, is refused with the references that work."""
+    from lib.erp import OdooError, _add_days
+
+    offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
+    if not offers:
+        pytest.skip("no vendor with a 3+ day lead time")
+    o = offers[0]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    today = erp.today()
+    early = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": _add_days(today, 1),
+        "order_line": [(0, 0, {"product_id": o["product_id"], "product_uom_qty": 1})]}])
+    late = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": _add_days(today, 60),
+        "order_line": [(0, 0, {"product_id": o["product_id"], "product_uom_qty": 1})]}])
+    erp.call("sale.order", "action_confirm", [[early, late]])
+    names = {r["id"]: r["name"] for r in erp.get("sale.order", [early, late], ["name"])}
+    lines = [(o["product_id"], max(o["min_qty"], 1))]
+    arrival = _add_days(today, o["delay_days"])
+    try:
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], lines, date_planned=arrival,
+                          origin=f"{names[early]}, {names[late]}")
+        message = str(excinfo.value)
+        assert names[early] in message and f"origin={names[late]!r}" in message
+
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], lines, date_planned=arrival, origin="S99999")
+        assert "not a sales or manufacturing order" in str(excinfo.value)
+
+        po_id = erp.create_po(o["vendor_id"], lines, date_planned=arrival, origin=names[late])
+        erp.cancel("purchase.order", po_id)
+        po_id = erp.create_po(o["vendor_id"], lines, date_planned=arrival,
+                              origin=names[early], force=True)
+        erp.cancel("purchase.order", po_id)
+    finally:
+        erp.cancel("sale.order", early)
+        erp.cancel("sale.order", late)
+
+
+def test_create_mo_writes_deadline_origin_and_workcenter(erp):
+    """The four things an MO must carry; Odoo supplies none of them."""
+    from lib.erp import OdooError
+
+    boms = erp.search_read("mrp.bom", [("operation_ids", "!=", False)], ["product_tmpl_id"], limit=1)
+    if not boms:
+        pytest.skip("this devbox scenario has no BOM with operations")
+    pid = erp.search_read("product.product", [("product_tmpl_id", "=", boms[0]["product_tmpl_id"][0])],
+                          ["id"], limit=1)[0]["id"]
+    bom = erp.bom_for(pid)
+    plan = erp.earliest_build(pid, 1)
+    assert plan["lead_days"] == bom["lead_days"] and plan["workcenters"]
+
+    # A deadline before start + lead time is refused, naming the honest date.
+    with pytest.raises(OdooError) as excinfo:
+        erp.create_mo(pid, 1, date_start="2026-10-01 08:00:00", date_deadline="2026-10-01 09:00:00")
+    assert "lead time" in str(excinfo.value)
+
+    # An origin the deadline cannot meet is refused.
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so_id = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": "2026-10-02 08:00:00",
+        "order_line": [(0, 0, {"product_id": pid, "product_uom_qty": 1})]}])
+    erp.call("sale.order", "action_confirm", [[so_id]])
+    so_name = erp.get("sale.order", [so_id], ["name"])[0]["name"]
+    try:
+        if bom["lead_days"] > 0:
+            with pytest.raises(OdooError) as excinfo:
+                erp.create_mo(pid, 1, date_start="2026-10-01 08:00:00", origin=so_name, force=False)
+            assert "origin refused" in str(excinfo.value) or "components" in str(excinfo.value)
+        wc = plan["workcenters"][0]["workcenter_id"]
+        mo = erp.create_mo(pid, 1, date_start="2026-10-01 08:00:00", origin=so_name,
+                           workcenter_id=wc, force=True)
+        row = erp.get("mrp.production", [mo], ["date_deadline", "origin", "date_start"])[0]
+        assert row["origin"] == so_name and row["date_deadline"]
+        wos = erp.search_read("mrp.workorder", [("production_id", "=", mo)], ["workcenter_id"], limit=5)
+        assert wos and all(w["workcenter_id"][0] == wc for w in wos)
+        erp.cancel("mrp.production", mo)
+    finally:
+        erp.cancel("sale.order", so_id)

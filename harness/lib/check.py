@@ -27,6 +27,8 @@ exactly what the first C_full run showed: 19 finish calls, 0 refusals. Items 8, 
 
 from __future__ import annotations
 
+import datetime as _dt
+
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -35,6 +37,10 @@ from .fmt import Table
 # The module itself is bound in the namespace as `check`; EXPORTS names the extra
 # symbols to bind alongside it. Listing "check" here asked for lib.check.check.
 EXPORTS = ["Check", "Rule"]
+
+# When this library loaded — after the scenario was seeded, before the agent's first write.
+# Documents created earlier belong to the scenario; those created later are the agent's.
+SESSION_START = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 # Documents the agent is responsible for finishing once it has created them.
 DRAFT_STATES = {
@@ -319,91 +325,101 @@ def _timeline_feasible(client) -> tuple[bool, str]:
 
 
 def _mo_feasible(client) -> tuple[bool, str]:
-    """Appendix B.6 (hard) — a manufacturing order's components can actually be there.
+    """Appendix B.6 (hard) — every MO's components are on hand when it starts.
 
     Second-largest failure family for the stock harness (`mo_component_feasibility`,
-    `mo_schedule_compliance`): an MO scheduled before the parts it consumes can arrive.
-    For each unfinished MO, every BOM component must be covered by free stock plus
-    receipts landing before the MO starts.
+    `component_stock_capacity_compliance`): an MO scheduled before the parts it consumes
+    can arrive. Judged the way a planner would: walk the MOs in start order; stock now
+    plus purchases landing on or before each start (at the honest arrival, max of
+    date_planned and order date + lead time) plus earlier MOs' output at their deadline
+    must cover the BOM quantities, and each MO consumes what it uses — two MOs sharing a
+    component cannot both count the same units.
     """
     productions = client.search_read(
         "mrp.production", [("state", "not in", ("done", "cancel"))],
-        ["name", "product_id", "product_qty", "date_start", "bom_id"], limit=100)
+        ["name", "product_id", "product_qty", "date_start", "date_deadline", "date_finished",
+         "bom_id"], limit=100)
     if not productions:
         return True, "no unfinished manufacturing orders"
 
-    on_hand: dict[int, float] = {}
+    stock: dict[int, float] = {}
     for quant in client.search_read(
             "stock.quant", [("location_id.usage", "=", "internal")],
-            ["product_id", "quantity", "reserved_quantity"], limit=1000):
+            ["product_id", "quantity"], limit=2000):
         if quant["product_id"]:
-            on_hand[quant["product_id"][0]] = on_hand.get(quant["product_id"][0], 0.0) + (
-                (quant["quantity"] or 0) - (quant["reserved_quantity"] or 0))
+            stock[quant["product_id"][0]] = stock.get(quant["product_id"][0], 0.0) + (quant["quantity"] or 0)
+
+    # Outstanding receipts, dated honestly.
+    arrivals: dict[int, list[tuple[str, float, str]]] = {}
+    po_lines = client.search_read(
+        "purchase.order.line", [("state", "in", ("purchase", "done"))],
+        ["product_id", "product_qty", "qty_received", "date_planned", "order_id"], limit=500)
+    order_ids = sorted({l["order_id"][0] for l in po_lines if l["order_id"]})
+    orders = {o["id"]: o for o in client.search_read(
+        "purchase.order", [("id", "in", order_ids)], ["name", "partner_id", "date_order"],
+        limit=500)} if order_ids else {}
+    for line in po_lines:
+        outstanding = (line["product_qty"] or 0) - (line["qty_received"] or 0)
+        if outstanding <= 0 or not line["product_id"] or not line["order_id"]:
+            continue
+        order = orders.get(line["order_id"][0])
+        arrives = line["date_planned"] or ""
+        if order and order.get("date_order") and order.get("partner_id"):
+            delay = _vendor_delay(client, order["partner_id"][0], line["product_id"][0])
+            if delay is not None:
+                arrives = max(arrives, _add_days(order["date_order"], delay))
+        arrivals.setdefault(line["product_id"][0], []).append(
+            (arrives[:10], outstanding, order["name"] if order else "PO"))
+    for lst in arrivals.values():
+        lst.sort()
+
+    def bring_in(product_id: int, by: str) -> None:
+        pending = arrivals.get(product_id) or []
+        while pending and pending[0][0] <= by:
+            stock[product_id] = stock.get(product_id, 0.0) + pending.pop(0)[1]
 
     problems = []
-    for production in productions:
-        if not production["bom_id"]:
-            continue
-        bom = client.search_read(
-            "mrp.bom", [("id", "=", production["bom_id"][0])],
-            ["product_qty", "bom_line_ids"], limit=1)
+    for mo in sorted(productions, key=lambda m: (m["date_start"] or "9999", m["id"])):
+        start = mo.get("date_start")
+        if not start or not mo.get("bom_id"):
+            continue                      # mo_schedule reports a missing start
+        bom = client.search_read("mrp.bom", [("id", "=", mo["bom_id"][0])],
+                                 ["product_qty", "bom_line_ids"], limit=1)
         if not bom or not bom[0].get("bom_line_ids"):
             continue
-        batch = bom[0]["product_qty"] or 1.0
-        multiplier = (production["product_qty"] or 0) / batch
-        components = client.call(
-            "mrp.bom.line", "read", [bom[0]["bom_line_ids"]],
-            {"fields": ["product_id", "product_qty"]})
-        start = production["date_start"]
-        for component in components:
+        multiplier = (mo["product_qty"] or 0) / (bom[0]["product_qty"] or 1.0)
+        for component in client.call("mrp.bom.line", "read", [bom[0]["bom_line_ids"]],
+                                     {"fields": ["product_id", "product_qty"]}):
             if not component["product_id"]:
                 continue
             cid, cname = component["product_id"]
             required = (component["product_qty"] or 0) * multiplier
-            available = on_hand.get(cid, 0.0)
-            if start:
-                for line in client.search_read(
-                        "purchase.order.line",
-                        [("product_id", "=", cid), ("state", "not in", ("cancel",))],
-                        ["date_planned", "product_qty", "qty_received", "order_id"], limit=100):
-                    outstanding = (line["product_qty"] or 0) - (line["qty_received"] or 0)
-                    if outstanding <= 0 or not line["date_planned"]:
-                        continue
-                    arrives = line["date_planned"]
-                    po = client.search_read(
-                        "purchase.order", [("id", "=", line["order_id"][0])],
-                        ["partner_id", "date_order"], limit=1) if line.get("order_id") else []
-                    if po and po[0].get("date_order") and po[0]["partner_id"]:
-                        delay = _vendor_delay(client, po[0]["partner_id"][0], cid)
-                        if delay is not None:
-                            earliest = _add_days(po[0]["date_order"], delay)
-                            arrives = max(arrives, earliest)
-                    if arrives[:10] <= start[:10]:
-                        available += outstanding
-                # A sub-assembly being built by another MO that finishes first counts too:
-                # serial sub-assembly plans are the norm in a third of the patterns.
-                for child in client.search_read(
-                        "mrp.production",
-                        [("product_id", "=", cid), ("state", "not in", ("done", "cancel")),
-                         ("id", "!=", production["id"])],
-                        ["product_qty", "date_start", "date_finished"], limit=50):
-                    finishes = child.get("date_finished") or child.get("date_start") or ""
-                    if start and finishes and finishes[:10] <= start[:10]:
-                        available += child["product_qty"] or 0
-            if available + 1e-6 < required:
-                problems.append(
-                    f"{production['name']}: needs {required:g} {cname} by "
-                    f"{(start or '?')[:10]}, only {available:g} available")
+            bring_in(cid, start[:10])
+            have = stock.get(cid, 0.0)
+            if have + 1e-6 < required:
+                pending = arrivals.get(cid) or []
+                nxt = (f"; next {pending[0][1]:g} arrive {pending[0][0]} on {pending[0][2]}"
+                       if pending else "; nothing more on order")
+                problems.append(f"{mo['name']} starts {start[:10]} needing {required:g} {cname}, "
+                                f"only {have:g} on hand by then{nxt}")
+                stock[cid] = 0.0
+            else:
+                stock[cid] = have - required
+        finish = mo.get("date_deadline") or mo.get("date_finished") or start
+        if mo["product_id"]:
+            arrivals.setdefault(mo["product_id"][0], []).append(
+                (finish[:10], mo["product_qty"] or 0, mo["name"]))
+            arrivals[mo["product_id"][0]].sort()
 
     if problems:
         shown = "; ".join(problems[:5])
         more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
         return False, (
-            f"{len(problems)} component shortfall(s): {shown}{more}. "
-            "Fix: erp.earliest_build(product_id, qty) says when every component can be on "
-            "hand and what to buy from whom; set the MO's date_start no earlier than that, "
-            "and place the component POs it lists.")
-    return True, f"every unfinished MO's components are covered ({len(productions)} MO(s))"
+            f"{len(problems)} manufacturing order(s) start before their components exist: {shown}{more}. "
+            "Fix: erp.earliest_build(product_id, qty) gives the start the components allow, "
+            "crediting purchases that land in time; order the shortfall first (origin = the MO "
+            "reference, date_planned on or before its date_start) or start the MO later.")
+    return True, f"every unfinished MO has its components on hand at start ({len(productions)})"
 
 
 def _demand_covered(client) -> tuple[bool, str]:
@@ -509,20 +525,183 @@ def _no_fabricated_receipts(client) -> tuple[bool, str]:
     return True, f"every validated receipt is on or after its vendor's earliest arrival ({len(done)})"
 
 
-def _po_has_origin(client) -> tuple[bool, str]:
-    """Soft — every purchase order says what it is for.
+def _origin_tokens(origin: str) -> list[str]:
+    return [t.strip() for t in (origin or "").split(",") if t.strip()]
 
-    `origin` is Odoo's traceability field (the sales order or MO a purchase serves). Five
-    stock-harness failures involved purchases created without it. Soft because it is
-    hygiene, not arithmetic; but the model sees it in every check table.
+
+def _origin_consistent(client) -> tuple[bool, str]:
+    """Appendix B.5, third part (hard) — every document's origin names only demand it feeds.
+
+    Found on the third checkpoint pass: a plan whose every date was right listed all four
+    customer orders as the PO's origin, two of them due the day before the goods land.
+    Every other invariant passed; the benchmark's schedule rule did not. `origin` is the
+    audit trail — "this purchase / this MO is for that order" — so naming an order the
+    document cannot reach in time is a false statement, not a formatting choice, and an
+    empty origin says the document is for nothing. Each token must name a real sales
+    order (need = commitment_date) or manufacturing order (need = date_start: a component
+    feeds the MO that consumes it), and the need date must be on or after the document's
+    honest arrival: a PO's max(date_planned, order date + lead time); an MO's
+    date_deadline.
     """
-    rows = client.search_read(
-        "purchase.order", [("state", "not in", ("cancel",))], ["name", "origin"], limit=200)
-    missing = [r["name"] for r in rows if not (r.get("origin") or "").strip()]
-    if missing:
-        return False, (f"{len(missing)} PO(s) with an empty origin: {', '.join(missing[:6])}. "
-                       "Set origin to the sales order / MO reference(s) the purchase serves.")
-    return True, f"every purchase order carries an origin ({len(rows)})"
+    docs: list[tuple[str, str, str, str, bool]] = []    # (name, kind, origin, arrives, ours)
+    for order in client.search_read(
+            "purchase.order", [("state", "in", ("purchase", "done"))],
+            ["name", "origin", "partner_id", "date_order", "date_planned", "create_date"], limit=200):
+        arrives = order.get("date_planned") or ""
+        if order.get("date_order") and order.get("partner_id"):
+            lines = client.search_read(
+                "purchase.order.line", [("order_id", "=", order["id"])], ["product_id"], limit=50)
+            delays = [_vendor_delay(client, order["partner_id"][0], l["product_id"][0])
+                      for l in lines if l["product_id"]]
+            delays = [d for d in delays if d is not None]
+            if delays:
+                earliest = _add_days(order["date_order"], max(delays))
+                if earliest > arrives:
+                    arrives = earliest
+        docs.append((order["name"], "PO", order.get("origin") or "", arrives,
+                     (order.get("create_date") or "") >= SESSION_START))
+    for mo in client.search_read(
+            "mrp.production", [("state", "not in", ("cancel",))],
+            ["name", "origin", "date_deadline", "date_finished", "date_start", "create_date",
+             "state"], limit=200):
+        finish = mo.get("date_deadline") or mo.get("date_finished") or mo.get("date_start") or ""
+        docs.append((mo["name"], "MO", mo.get("origin") or "", finish,
+                     (mo.get("create_date") or "") >= SESSION_START and mo.get("state") != "done"))
+    if not docs:
+        return True, "no confirmed purchase or manufacturing orders"
+
+    tokens = sorted({t for _, _, origin, _, _ in docs for t in _origin_tokens(origin)})
+    need: dict[str, str | None] = {}
+    if tokens:
+        for so in client.search_read(
+                "sale.order", [("name", "in", tokens), ("state", "not in", ("cancel",))],
+                ["name", "commitment_date"], limit=200):
+            need[so["name"]] = so.get("commitment_date") or None
+        for mo in client.search_read(
+                "mrp.production", [("name", "in", tokens), ("state", "not in", ("cancel",))],
+                ["name", "date_start"], limit=200):
+            need.setdefault(mo["name"], mo.get("date_start") or None)
+
+    problems, fixes = [], []
+    for name, kind, origin, arrives, ours in docs:
+        toks = _origin_tokens(origin)
+        if not toks:
+            # Seeded documents never carry an origin and are not ours to edit; only a
+            # document created in this session (after the library loaded) is judged.
+            if ours:
+                problems.append(f"{name} has an empty origin")
+            continue
+        unknown = [t for t in toks if t not in need]
+        late = [t for t in toks if t in need and need[t] and arrives and need[t][:10] < arrives[:10]]
+        ok = [t for t in toks if t in need and t not in late]
+        if unknown:
+            problems.append(f"{name} names {', '.join(unknown[:4])}, which is not a sales or "
+                            "manufacturing order reference")
+        if late:
+            due = ", ".join(f"{t} (needs it by {need[t][:10]})" for t in late[:4])
+            verb = "lands" if kind == "PO" else "finishes"
+            problems.append(f"{name} {verb} {arrives[:10]} but its origin names {due}")
+            fixes.append(f"{name}: origin = {', '.join(ok) if ok else '<the orders it does reach in time>'!r}")
+    if problems:
+        shown = "; ".join(problems[:4])
+        more = f" (+{len(problems) - 4} more)" if len(problems) > 4 else ""
+        hint = (" Fix: " + "; ".join(fixes[:3]) + ".") if fixes else ""
+        return False, (
+            f"{len(problems)} document(s) whose origin misstates what they feed: {shown}{more}. "
+            "origin lists exactly the orders whose need date this document meets — a finished-"
+            "goods PO or MO names sales orders, a component PO names the MOs it supplies — "
+            "comma-separated exact references, nothing else." + hint +
+            " To feed the others too, buy from a vendor who lands in time (erp.feasible_vendors) "
+            "or start earlier (erp.earliest_build).")
+    return True, f"every purchase and manufacturing order names demand it reaches in time ({len(docs)})"
+
+
+def _mo_schedule(client) -> tuple[bool, str]:
+    """Appendix B.6, first half (hard) — an MO carries the dates and the work centre a plan needs.
+
+    Odoo creates an MO with `date_deadline` EMPTY and, when the BOM has operations, a work
+    order on the operation's default centre. A plan reader cannot schedule an MO with no
+    due date, and a due date earlier than start + the BOM's lead time (`produce_delay`)
+    is a promise the shop cannot keep. `erp.create_mo` writes all of it; this is the
+    check for MOs written any other way.
+    """
+    productions = client.search_read(
+        "mrp.production", [("state", "not in", ("done", "cancel"))],
+        ["name", "date_start", "date_deadline", "bom_id"], limit=100)
+    if not productions:
+        return True, "no unfinished manufacturing orders"
+    problems = []
+    for mo in productions:
+        if not mo.get("date_start"):
+            problems.append(f"{mo['name']}: no date_start")
+            continue
+        lead, operations = 0, []
+        if mo.get("bom_id"):
+            bom = client.search_read("mrp.bom", [("id", "=", mo["bom_id"][0])],
+                                     ["produce_delay", "operation_ids"], limit=1)
+            if bom:
+                lead = bom[0].get("produce_delay") or 0
+                operations = bom[0].get("operation_ids") or []
+        earliest = _add_days(mo["date_start"], lead)
+        if not mo.get("date_deadline"):
+            problems.append(f"{mo['name']}: no date_deadline (Odoo leaves it empty); "
+                            f"earliest honest finish is {earliest[:10]}")
+        elif mo["date_deadline"][:10] < earliest[:10]:
+            problems.append(f"{mo['name']}: date_deadline {mo['date_deadline'][:10]} is before "
+                            f"date_start {mo['date_start'][:10]} + {lead}d lead time = {earliest[:10]}")
+        workorders = client.search_read(
+            "mrp.workorder", [("production_id", "=", mo["id"]), ("state", "!=", "cancel")],
+            ["name", "workcenter_id"], limit=20)
+        if operations and not workorders:
+            problems.append(f"{mo['name']}: its BOM has operations but the MO has no work order")
+        for wo in workorders:
+            if not wo.get("workcenter_id"):
+                problems.append(f"{mo['name']}: work order {wo['name']!r} has no work centre")
+    if problems:
+        shown = "; ".join(problems[:5])
+        more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
+        return False, (
+            f"{len(problems)} manufacturing order(s) not schedulable: {shown}{more}. Fix: "
+            "erp.create_mo(product_id, qty, date_start=..., date_deadline=..., origin=..., "
+            "workcenter_id=...) writes all four (date_deadline defaults to start + lead time); "
+            "erp.earliest_build(product_id, qty) gives the dates; for an existing MO write "
+            "date_deadline / the work order's workcenter_id.")
+    return True, f"every unfinished MO has a start, a feasible due date and a work centre ({len(productions)})"
+
+
+def _workcenter_capacity(client) -> tuple[bool, str]:
+    """Hard — no work centre is booked past the minute limit its Internal Notes state.
+
+    A capacity limit written on the centre is a constraint like any other; the arithmetic
+    is qty × the operation's minutes per unit, summed over live MOs at that centre.
+    Centres whose notes state no limit are not judged.
+    """
+    from .erp import _minutes_limit
+
+    try:
+        centres, _operations, committed = client._workcenter_load()
+    except Exception as exc:        # noqa: BLE001 - mrp not installed
+        if "not exist" in str(exc) or "Object" in str(exc):
+            return True, "no work centres"
+        raise
+    problems, judged = [], 0
+    for c in centres:
+        limit = _minutes_limit(c.get("note") or "")
+        if limit is None:
+            continue
+        judged += 1
+        used = committed.get(c["id"], 0.0)
+        if used > limit + 0.01:
+            problems.append(f"{c['name']}: {used:.0f} min booked vs a {limit:.0f} min limit "
+                            f"(over by {used - limit:.0f})")
+    if problems:
+        return False, (
+            f"{len(problems)} work centre(s) over their stated limit: {'; '.join(problems[:4])}. "
+            "Fix: erp.workcenter_options(product_id) shows each centre's minutes free and "
+            "units that fit; split the quantity into MOs on different centres "
+            "(workcenter_id=...), or cover the remainder by purchase.")
+    return True, (f"every work centre with a stated limit is within it ({judged})" if judged
+                  else "no work centre states a minute limit")
 
 
 def _so_has_commitment_date(client) -> tuple[bool, str]:
@@ -552,11 +731,20 @@ INVARIANTS: list[Check] = [
           _demand_covered),
     Check("timeline_feasible", "receipts land before the demand they feed", True,
           _timeline_feasible),
-    Check("mo_feasible", "MO components are available before it starts", True, _mo_feasible),
+    Check("mo_feasible", "MO components are on hand when it starts", True, _mo_feasible),
     Check("no_fabricated_receipts", "nothing received before it could arrive", True,
           _no_fabricated_receipts),
-    Check("po_has_origin", "purchase orders say what they are for", False, _po_has_origin),
-    Check("so_has_commitment_date", "confirmed sales orders carry a due date", False,
+    # Pass 3 of the checkpoint: every date right, origin naming an order the PO could not
+    # feed; and the make-task family (7 of 8 lost by the stock harness on dev40) where an
+    # MO with no due date, no work centre, or a deadline before start + lead time is not a
+    # plan.
+    Check("origin_consistent", "each PO/MO origin names only demand it reaches in time", True,
+          _origin_consistent),
+    Check("mo_schedule", "every MO has a start, a feasible due date and a work centre", True,
+          _mo_schedule),
+    Check("workcenter_capacity", "no work centre is booked past its stated limit", True,
+          _workcenter_capacity),
+    Check("so_has_commitment_date", "every confirmed sales order has a commitment date", True,
           _so_has_commitment_date),
 ]
 

@@ -27,6 +27,7 @@ Field names are the Odoo 19 ones, verified against a live container:
 from __future__ import annotations
 
 import os
+import re
 import xmlrpc.client
 from typing import Any, Iterable, Sequence
 
@@ -96,6 +97,23 @@ def _ids(value: int | Iterable[int] | None) -> list[int] | None:
     if isinstance(value, int):
         return [value]
     return list(value)
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", text or "").replace("&nbsp;", " ").strip()
+
+
+def _minutes_limit(note: str) -> float | None:
+    """A horizon-wide minute limit stated in a work centre's notes, if any.
+
+    Reads "N ... minutes" from free text (HTML stripped); a note that names several
+    numbers with 'minutes' yields the largest, which is the total rather than a per-day
+    figure in every phrasing seen. None when the note states no limit.
+    """
+    text = _strip_html(note)
+    found = [float(m.replace(",", "")) for m in
+             re.findall(r"(\d[\d,]*(?:\.\d+)?)\s*(?:total\s+)?(?:processing\s+)?minutes", text, re.I)]
+    return max(found) if found else None
 
 
 def _add_days(stamp: str, days: float) -> str:
@@ -417,39 +435,109 @@ class Erp:
               "scheduled_date": r["scheduled_date"]} for r in rows],
             ["id", "name", "picking_type", "origin", "state", "scheduled_date"], "stock.picking")
 
-    def workcenters(self) -> Table:
-        """Work centres with their capacity numbers — the input to any assembly-capacity rule.
+    def _workcenter_load(self) -> tuple[list[dict], list[dict], dict[int, float]]:
+        """Work centres, their BOM operations, and minutes already committed per centre.
 
-        Odoo 19 has no `default_capacity` on the work centre; per-product capacities live in
-        `mrp.workcenter.capacity` rows (`capacity_ids`), and throughput otherwise comes from
-        the calendar plus `time_efficiency`. Both are surfaced here (field names verified
-        against the live image).
+        Committed minutes = Σ over live MOs' work orders of qty × the operation's minutes
+        per unit (`time_cycle_manual`). This is the arithmetic behind any horizon-wide
+        capacity limit written in a centre's Internal Notes.
+        """
+        centres = self.search_read(
+            "mrp.workcenter", [],
+            ["name", "code", "note", "time_efficiency", "time_start", "time_stop",
+             "costs_hour", "alternative_workcenter_ids"], limit=100)
+        operations = self.search_read(
+            "mrp.routing.workcenter", [],
+            ["name", "workcenter_id", "bom_id", "time_cycle_manual", "time_cycle"], limit=200)
+        op_minutes = {o["id"]: (o.get("time_cycle_manual") or o.get("time_cycle") or 0.0)
+                      for o in operations}
+        committed: dict[int, float] = {}
+        productions = {m["id"]: m for m in self.search_read(
+            "mrp.production", [("state", "not in", ("cancel",))],
+            ["product_qty", "state"], limit=500)}
+        if productions:
+            for wo in self.search_read(
+                    "mrp.workorder",
+                    [("production_id", "in", list(productions)), ("state", "!=", "cancel")],
+                    ["workcenter_id", "operation_id", "production_id", "duration_expected"],
+                    limit=1000):
+                wc = _id_of(wo.get("workcenter_id"))
+                mo = productions.get(_id_of(wo.get("production_id")))
+                if wc is None or mo is None:
+                    continue
+                per_unit = op_minutes.get(_id_of(wo.get("operation_id")))
+                minutes = (mo["product_qty"] or 0) * per_unit if per_unit else (wo.get("duration_expected") or 0)
+                committed[wc] = committed.get(wc, 0.0) + minutes
+        return centres, operations, committed
+
+    def workcenters(self) -> Table:
+        """Work centres with the numbers any assembly-capacity rule needs.
+
+        `minutes_limit` is parsed from the centre's Internal Notes when they state a
+        horizon-wide minute limit; `minutes_committed` is what live MOs already book
+        there (qty × minutes per unit); `operations` lists which products it assembles
+        and at what rate; `alternatives` are the centres Odoo lets a work order move to.
         """
         try:
-            rows = self.search_read(
-                "mrp.workcenter", [],
-                ["name", "time_efficiency", "time_start", "time_stop", "resource_calendar_id",
-                 "costs_hour", "capacity_ids"], limit=100)
+            centres, operations, committed = self._workcenter_load()
         except OdooError as exc:
             if "not exist" in str(exc) or "Object" in str(exc):
                 return Table([], ["id", "name"], "mrp.workcenter (not installed)")
             raise
-        cap_ids = [c for r in rows for c in (r.get("capacity_ids") or [])]
-        caps: dict[int, list[str]] = {}
-        if cap_ids:
-            for c in self.call("mrp.workcenter.capacity", "read", [cap_ids],
-                               {"fields": ["workcenter_id", "product_id", "capacity"]}):
-                wc = _id_of(c.get("workcenter_id"))
-                caps.setdefault(wc, []).append(
-                    f"{_name_of(c.get('product_id'))}: {c.get('capacity')}")
-        return Table(
-            [{"id": r["id"], "name": r["name"], "efficiency_pct": r.get("time_efficiency"),
-              "setup_min": r.get("time_start"), "cleanup_min": r.get("time_stop"),
-              "cost_per_hour": r.get("costs_hour"),
-              "calendar": _name_of(r.get("resource_calendar_id")),
-              "per_product_capacity": "; ".join(caps.get(r["id"], [])) or ""} for r in rows],
-            ["id", "name", "efficiency_pct", "setup_min", "cleanup_min", "cost_per_hour",
-             "calendar", "per_product_capacity"], "mrp.workcenter")
+        ops_by_wc: dict[int, list[str]] = {}
+        for o in operations:
+            wc = _id_of(o.get("workcenter_id"))
+            if wc is not None:
+                product = _name_of(o.get("bom_id"))
+                ops_by_wc.setdefault(wc, []).append(
+                    f"{product}: {o.get('time_cycle_manual') or o.get('time_cycle') or 0:g} min/unit")
+        names = {c["id"]: c["name"] for c in centres}
+        rows = []
+        for c in centres:
+            limit = _minutes_limit(c.get("note") or "")
+            used = round(committed.get(c["id"], 0.0), 1)
+            rows.append({
+                "id": c["id"], "code": c.get("code") or "", "name": c["name"],
+                "cost_per_hour": c.get("costs_hour"), "efficiency_pct": c.get("time_efficiency"),
+                "minutes_limit": limit, "minutes_committed": used,
+                "minutes_free": (round(limit - used, 1) if limit is not None else None),
+                "operations": "; ".join(ops_by_wc.get(c["id"], [])),
+                "alternatives": ", ".join(names.get(a, str(a)) for a in (c.get("alternative_workcenter_ids") or [])),
+                "note": _strip_html(c.get("note") or "")[:220],
+            })
+        return Table(rows, ["id", "code", "name", "cost_per_hour", "efficiency_pct", "minutes_limit",
+                            "minutes_committed", "minutes_free", "operations", "alternatives", "note"],
+                     "mrp.workcenter")
+
+    def workcenter_options(self, product_id: int) -> Table:
+        """Where this product can be assembled, with per-unit minutes and cost, and the
+        minutes each centre has left — the input to choosing / splitting work centres."""
+        bom = self.bom_for(product_id)
+        if not bom or not bom["operation_ids"]:
+            return Table([], ["workcenter_id", "name"], "work-centre options (no operations)")
+        centres, operations, committed = self._workcenter_load()
+        by_id = {c["id"]: c for c in centres}
+        rows = []
+        for o in operations:
+            if _id_of(o.get("bom_id")) != bom["id"]:
+                continue
+            minutes = o.get("time_cycle_manual") or o.get("time_cycle") or 0.0
+            primary = _id_of(o.get("workcenter_id"))
+            for wc_id in [primary] + list((by_id.get(primary) or {}).get("alternative_workcenter_ids") or []):
+                c = by_id.get(wc_id)
+                if not c:
+                    continue
+                limit = _minutes_limit(c.get("note") or "")
+                used = committed.get(wc_id, 0.0)
+                rows.append({
+                    "workcenter_id": wc_id, "name": c["name"], "code": c.get("code") or "",
+                    "role": "primary" if wc_id == primary else "alternative",
+                    "min_per_unit": minutes, "cost_per_unit": round((c.get("costs_hour") or 0) * minutes / 60, 2),
+                    "minutes_limit": limit, "minutes_free": (round(limit - used, 1) if limit is not None else None),
+                    "units_fit": (int((limit - used) // minutes) if limit is not None and minutes else None),
+                })
+        return Table(rows, ["workcenter_id", "name", "code", "role", "min_per_unit", "cost_per_unit",
+                            "minutes_limit", "minutes_free", "units_fit"], "work-centre options")
 
     def invoices(self, move_type: str = "out_invoice", state: str | None = None) -> Table:
         domain: list = [("move_type", "=", move_type)] if move_type else []
@@ -573,8 +661,17 @@ class Erp:
                 entry["ready"] = ready.strftime("%Y-%m-%d %H:%M:%S")
                 latest = max(latest, ready)
             detail.append(entry)
-        return {"date_start": latest.strftime("%Y-%m-%d %H:%M:%S"),
-                "components": detail, "unsourceable": unsourceable}
+        bom = self.bom_for(product_id)
+        lead = bom["lead_days"] if bom else 0
+        result = {"date_start": latest.strftime("%Y-%m-%d %H:%M:%S"),
+                  "lead_days": lead,
+                  "date_deadline": (latest + timedelta(days=int(lead))).strftime("%Y-%m-%d %H:%M:%S"),
+                  "components": detail, "unsourceable": unsourceable}
+        if _depth == 0:
+            options = self.workcenter_options(product_id).all()
+            if options:
+                result["workcenters"] = options
+        return result
 
     # -- writes ---------------------------------------------------------------
     def create_po(self, vendor_id: int, lines: Sequence[tuple], date_planned: str | None = None,
@@ -609,6 +706,8 @@ class Erp:
                         f"+ {delay}d lead time). Use that date, pick a faster vendor via "
                         f"erp.feasible_vendors(...), or pass force=True if you know better.",
                         "purchase.order", "create_po")
+            if origin:
+                self._check_origin_feeds(vendor_id, lines, date_planned, origin)
         commands = []
         for line in lines:
             product_id, qty = line[0], line[1]
@@ -626,6 +725,65 @@ class Erp:
         if origin:
             order["origin"] = origin
         return self.call("purchase.order", "create", [order])
+
+    def _check_origin_feeds(self, vendor_id: int, lines: Sequence[tuple],
+                            date_planned: str | None, origin: str) -> None:
+        """Refuse an origin naming an order this purchase cannot feed (see `_refuse_bad_origin`)."""
+        today = self.today()
+        arrives = ""
+        for line in lines:
+            line_date = line[3] if len(line) > 3 and line[3] else date_planned
+            delay = self._delay_for(vendor_id, line[0])
+            candidate = max(filter(None, [line_date or "", _add_days(today, delay) if delay is not None else ""]), default="")
+            if candidate > arrives:
+                arrives = candidate
+        self._refuse_bad_origin(arrives, origin, "this purchase lands")
+
+    def _origin_needs(self, tokens: Sequence[str]) -> dict[str, str | None]:
+        """Need date for each origin reference: a sales order's commitment_date, or a
+        manufacturing order's date_start (a component feeds the MO that consumes it)."""
+        need: dict[str, str | None] = {}
+        for so in self.search_read("sale.order", [("name", "in", list(tokens)), ("state", "not in", ("cancel",))],
+                                   ["name", "commitment_date"], limit=200):
+            need[so["name"]] = so.get("commitment_date") or None
+        for mo in self.search_read("mrp.production", [("name", "in", list(tokens)), ("state", "not in", ("cancel",))],
+                                   ["name", "date_start"], limit=200):
+            need.setdefault(mo["name"], mo.get("date_start") or None)
+        return need
+
+    def _refuse_bad_origin(self, arrives: str, origin: str, what: str) -> None:
+        """`origin` is the audit trail: "this document is for that order".
+
+        A plan on the third checkpoint pass had every date right and still failed, because
+        the PO listed all four customer orders — two of them due before the goods land.
+        The write is refused with the references that do work, so the fix is a string
+        edit, not a re-plan. The same rule holds for an MO (its deadline must meet the
+        order it builds for) and for a component PO (it must land by the MO's start).
+        """
+        tokens = [t.strip() for t in origin.split(",") if t.strip()]
+        if not tokens:
+            return
+        need = self._origin_needs(tokens)
+        unknown = [t for t in tokens if t not in need]
+        late = [t for t in tokens if t in need and need[t] and arrives and need[t][:10] < arrives[:10]]
+        if not unknown and not late:
+            return
+        ok = [t for t in tokens if t in need and t not in late]
+        parts = []
+        if unknown:
+            parts.append(f"{', '.join(unknown)} is not a sales or manufacturing order reference "
+                         "(origin takes exact references, comma-separated)")
+        if late:
+            due = ", ".join(f"{t} (needs it by {need[t][:10]})" for t in late)
+            parts.append(f"{what} {arrives[:10]} but origin names {due}, which it cannot feed")
+        raise OdooError(
+            "origin refused: " + "; ".join(parts) + ". origin lists only the orders whose need "
+            f"date this document meets — here origin={', '.join(ok)!r}"
+            + (" (nothing on this list qualifies)" if not ok else "")
+            + ". To feed the others, buy from a vendor who lands in time (erp.feasible_vendors) "
+            "or start earlier (erp.earliest_build). force=True writes it anyway, and the finish "
+            "check will refuse it.",
+            "purchase.order", "origin")
 
     def _delay_for(self, vendor_id: int, product_id: int):
         """Lead time in days for this vendor/product, or None if the vendor does not list it."""
@@ -693,14 +851,56 @@ class Erp:
         rows = self.call("purchase.order", "read", [[po_id]], {"fields": ["picking_ids"]})
         return rows[0]["picking_ids"] if rows else []
 
+    def bom_for(self, product_id: int, bom_id: int | None = None) -> dict | None:
+        """The BOM Odoo would use for this product: id, lead time (`produce_delay`, days),
+        batch qty, and whether it carries operations (work orders need a work centre)."""
+        template = self.search_read(
+            "product.product", [("id", "=", product_id)], ["product_tmpl_id"], limit=1)
+        template_id = _id_of(template[0]["product_tmpl_id"]) if template else None
+        domain = [("id", "=", bom_id)] if bom_id else [
+            ("product_tmpl_id", "=", template_id),
+            "|", ("product_id", "=", product_id), ("product_id", "=", False)]
+        rows = self.search_read("mrp.bom", domain,
+                                ["produce_delay", "product_qty", "operation_ids"], limit=1)
+        if not rows:
+            return None
+        r = rows[0]
+        return {"id": r["id"], "lead_days": r.get("produce_delay") or 0,
+                "batch_qty": r.get("product_qty") or 1.0,
+                "operation_ids": r.get("operation_ids") or []}
+
     def create_mo(self, product_id: int, qty: float, bom_id: int | None = None,
-                  date_start: str | None = None, force: bool = False) -> int:
+                  date_start: str | None = None, date_deadline: str | None = None,
+                  origin: str | None = None, workcenter_id: int | None = None,
+                  force: bool = False) -> int:
         """`mrp.production.create`. Odoo picks the BOM if one is not named.
 
-        **Refuses a `date_start` before the components can be on hand** (per
-        `earliest_build`) unless `force=True` — the manufacturing half of the timing rule.
-        Components already ordered on a PO landing before date_start count as available.
+        Writes the four things an MO must carry to be a plan rather than a record:
+        `date_start`; `date_deadline` (defaults to start + the BOM's lead time, the
+        honest finish — Odoo leaves it EMPTY, and an MO with no deadline is unschedulable
+        to anyone reading the plan); `origin` (the order it builds for); and the work
+        centre on its work orders (`workcenter_id`, when the BOM has operations — Odoo
+        creates the work order on the operation's default centre, this moves it).
+
+        Refuses, unless `force=True`: a `date_start` before the components can be on hand
+        (per `earliest_build`, crediting POs landing in time and child MOs finishing in
+        time); a `date_deadline` earlier than start + lead time; an origin naming an order
+        the deadline does not meet.
         """
+        bom = self.bom_for(product_id, bom_id)
+        lead = bom["lead_days"] if bom else 0
+        if date_start and not date_deadline:
+            date_deadline = _add_days(date_start, lead)
+        if date_start and date_deadline and not force:
+            earliest_finish = _add_days(date_start, lead)
+            if date_deadline[:10] < earliest_finish[:10]:
+                raise OdooError(
+                    f"date_deadline {date_deadline[:10]} is before date_start {date_start[:10]} + "
+                    f"the BOM's {lead}d lead time = {earliest_finish[:10]}. Use that date (or "
+                    "omit date_deadline to get it), start earlier, or pass force=True.",
+                    "mrp.production", "create_mo")
+        if origin and not force:
+            self._refuse_bad_origin(date_deadline or date_start or "", origin, "this MO finishes")
         if date_start and not force:
             plan = self.earliest_build(product_id, qty)
             if plan.get("unsourceable"):
@@ -744,7 +944,18 @@ class Erp:
             values["bom_id"] = bom_id
         if date_start:
             values["date_start"] = date_start
-        return self.call("mrp.production", "create", [values])
+        if date_deadline:
+            values["date_deadline"] = date_deadline
+        if origin:
+            values["origin"] = origin
+        mo_id = self.call("mrp.production", "create", [values])
+        if workcenter_id:
+            workorders = self.search_read(
+                "mrp.workorder", [("production_id", "=", mo_id)], ["id"], limit=20)
+            if workorders:
+                self.call("mrp.workorder", "write",
+                          [[w["id"] for w in workorders], {"workcenter_id": workcenter_id}])
+        return mo_id
 
     def confirm_mo(self, mo_id: int):
         """`mrp.production.action_confirm`."""

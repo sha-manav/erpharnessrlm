@@ -36,7 +36,7 @@ EVAL_SETS = {"eval100", "eval100_remaining", "eval100_remaining_big", "eval100_r
 # big model and ~$0.10 on the small one, and nothing from these sets goes into the
 # write-up, so they default to the small model (PLAN.md P2.9: only dev40 feeds the dev
 # curve). Using the big model here is allowed but has to be deliberate.
-ITERATION_SETS = {"dev5", "dev10"}
+ITERATION_SETS = {"dev5", "dev10", "make6"}
 
 
 def git(*args: str) -> str:

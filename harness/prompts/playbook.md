@@ -21,6 +21,12 @@ po = erp.create_po(vendor_id, [(product_id, qty)],
 erp.confirm_po(po)                                       # leave it confirmed; no receive()
 ```
 
+`origin` is the audit trail — *this purchase is for that order*. Name **only** the orders
+this purchase feeds: exact references (`S00004`, or `S00003, S00004`), and only those
+whose due date the arrival meets. An order due before the goods land is not fed by this
+purchase, whatever else it says; naming it is refused, and the refusal lists the
+references that do qualify. Orders you deliver from stock are not fed by the purchase.
+
 `erp.receive(po)` exists for goods whose planned date has already passed — not for goods
 that *will* arrive in time. "Arrives before the due date" means the order is correct as it
 stands; it does not mean you receive it now. **`force=True` never makes a check pass**: a
@@ -28,14 +34,33 @@ forced early receipt is refused at finish as fabricated stock. If a delivery can
 covered from stock plus purchases that arrive in time, that is the answer — report it,
 do not manufacture it.
 
-**Manufacturing.** Create the MO, confirm, then produce. `erp.produce` reserves, sets
-`qty_producing`, **writes the component consumption explicitly** and marks done — without
-that last part Odoo finishes the order having consumed nothing.
+**Manufacturing.** An MO is a plan only when it carries four things: `date_start`;
+`date_deadline` (the due date — Odoo leaves it **empty**, and it must be on or after
+start + the BOM's lead time); `origin` (the sales order it builds for; a sub-assembly MO
+names the parent MO); and a work centre on its work order (choose with
+`erp.workcenter_options`; every centre's Internal Notes state a horizon-wide minute
+limit that all products sharing it count against — `qty × min/unit`). Components not on
+hand are bought first, on POs whose `origin` is the MO reference and whose arrival is on
+or before the MO's start. Confirm the MO; produce only if the task says the goods are
+needed now and the components are actually on hand.
 
 ```python
-mo = erp.create_mo(product_id, qty, date_start="2026-09-05 08:00:00")
-erp.confirm_mo(mo); erp.produce(mo)
+plan = erp.earliest_build(product_id, qty)          # date_start the components allow,
+                                                     # date_deadline, what to buy from whom,
+                                                     # work-centre options with minutes free
+mo = erp.create_mo(product_id, qty, date_start=plan["date_start"],
+                   date_deadline=plan["date_deadline"],      # >= start + lead time
+                   origin="S00030", workcenter_id=1)         # the order it is for; the centre
+erp.confirm_mo(mo)
+po = erp.create_po(vendor_id, [(component_id, need)],        # components first
+                   date_planned=plan["date_start"], origin=erp.get("mrp.production", [mo], ["name"])[0]["name"])
 ```
+
+When one centre's minutes cannot hold the whole quantity, split it: two MOs on two
+centres (`units_fit` says how many each takes), or make part and buy the rest.
+`erp.produce` exists for goods needed today: it reserves, sets `qty_producing`,
+**writes the component consumption explicitly** and marks done — without that Odoo
+finishes the order having consumed nothing.
 
 **Sales.** Confirm, and set `commitment_date`. Deliver **only what is on hand now** —
 a delivery draws from stock, and stock that is still on a purchase order is not on hand.
@@ -63,8 +88,11 @@ against the live data:
 erp.feasible_vendors(product_id, qty, need_by)   # only vendors who can land it in time:
                                                   # arrival date (use as date_planned), MOQ,
                                                   # line total, vendor notes; cheapest first
-erp.earliest_build(product_id, qty)              # when an MO can start: per-component
-                                                  # stock, what to buy from whom, arrival
+erp.earliest_build(product_id, qty)              # when an MO can start and finish: per-
+                                                  # component stock, what to buy from whom,
+                                                  # lead time, work-centre options
+erp.workcenter_options(product_id)               # centres that assemble it: min/unit, cost,
+                                                  # minutes free, units that fit
 ```
 
 An empty `feasible_vendors` table means no listed vendor can make the date — cover the

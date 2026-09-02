@@ -16,7 +16,7 @@ from .fmt import Table
 
 EXPORTS = ["brief"]
 
-CHAR_BUDGET = 6900   # ~2,000 tokens at the measured 0.30 tokens/char; sections sum to 6,300
+CHAR_BUDGET = 7900   # ~2,000 tokens at the measured 0.30 tokens/char; sections sum to 6,300
 
 
 def _section(title: str, table: Table, rows: int, chars: int) -> str:
@@ -43,7 +43,7 @@ SECTIONS = {
     "sales": (12, 500),
     "purchases": (12, 500),
     "productions": (12, 400),
-    "workcenters": (10, 400),
+    "workcenters": (10, 1400),
 }
 
 

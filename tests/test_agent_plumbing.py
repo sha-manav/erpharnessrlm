@@ -85,7 +85,10 @@ partner = erp.search_read('res.partner', [('customer_rank', '>', 0)], ['name'], 
 so = erp.call('sale.order', 'create', [{'partner_id': partner, 'commitment_date': '2026-09-10 12:00:00',
       'order_line': [(0, 0, {'product_id': o['product_id'], 'product_uom_qty': 5})]}])
 erp.call('sale.order', 'action_confirm', [[so]])
-po = erp.create_po(o['vendor_id'], [(o['product_id'], max(o['min_qty'], 5))], date_planned='2026-09-25 12:00:00')
+so_name = erp.get('sale.order', [so], ['name'])[0]['name']
+# force=True: the write-time origin guard would refuse a PO landing after the order it feeds.
+po = erp.create_po(o['vendor_id'], [(o['product_id'], max(o['min_qty'], 5))], date_planned='2026-09-25 12:00:00',
+                   origin=so_name, force=True)
 erp.confirm_po(po)
 print('seeded late PO', po)
 """

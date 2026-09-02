@@ -28,7 +28,8 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 - `po_lines(po_ids)`
 - `productions(state=None, ids=None)`
 - `pickings(picking_type=None, state=None, origin=None)`
-- `workcenters()` — Work centres with their capacity numbers — the input to any assembly-capacity rule.
+- `workcenters()` — Work centres with the numbers any assembly-capacity rule needs.
+- `workcenter_options(product_id)` — Where this product can be assembled, with per-unit minutes and cost, and the
 - `invoices(move_type='out_invoice', state=None)`
 - `today()` — The server's idea of now, as an Odoo datetime string (UTC).
 - `feasible_vendors(product_id, qty, need_by, order_date=None)` — Vendors who can land `qty` of a product by `need_by`, with the arrival date.
@@ -37,7 +38,8 @@ A typed Odoo client for procurement and manufacturing work (PLAN.md P2.3).
 - `vendor_price(vendor_id, product_id, qty)` — The supplierinfo price for this vendor/product at this quantity tier.
 - `confirm_po(po_id)` — `purchase.order.button_confirm`.
 - `receive(po_id, force=False)` — Validate every incoming picking of a PO. Returns the picking ids validated.
-- `create_mo(product_id, qty, bom_id=None, date_start=None, force=False)` — `mrp.production.create`. Odoo picks the BOM if one is not named.
+- `bom_for(product_id, bom_id=None)` — The BOM Odoo would use for this product: id, lead time (`produce_delay`, days),
+- `create_mo(product_id, qty, bom_id=None, date_start=None, date_deadline=None, origin=None, workcenter_id=None, force=False)` — `mrp.production.create`. Odoo picks the BOM if one is not named.
 - `confirm_mo(mo_id)` — `mrp.production.action_confirm`.
 - `produce(mo_id, qty=None)` — Reserve, set `qty_producing`, consume the components, and mark done.
 - `deliver(so_id)` — Validate every outgoing picking of a sales order.

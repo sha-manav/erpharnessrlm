@@ -897,6 +897,54 @@ before the due date already covers that demand and the delivery should stay pend
 Pass 3 tests it; early signal: 2035 finished at 100 after the check surfaced in three
 rehearsals, and 2004 has not touched `force` at all.
 
+## Checkpoint pass 3 (2026-09-02) — the force hole is closed; the real loss is origin and MOs
+
+2035 and 2024 at 100. 2004: the model tried `receive(po, force=True)` **inside a
+rehearsal** at step 15, `no_fabricated_receipts` failed it on the spot, and it never
+touched `force` again — redesigned the plan, clean rehearsal at 29, all 20 harness checks
+green on main, finish at 34. And the grader gave it **20.97**, failing exactly
+`supply_timing_feasible` + `po_delivery_schedule_compliance`.
+
+Why (read from the dev task's grader, 2004 — a dev task): a PO's origin tokens are the
+demand it feeds, and **every** token must name an order whose need date is on or after
+the PO's planned date. The model wrote `origin="S00001, S00002, S00003, S00004"` — two of
+them due 09-07 for a PO landing 09-08. pi wrote `origin="S00004"` and passed. My checks
+had no view of origin semantics at all.
+
+Then the bigger one. On dev40's 31 make/repair tasks A passed 9 and C v0 passed **1**;
+the failing rules are all MO scheduling semantics: `mo_schedule_compliance` (an MO needs
+`date_deadline` — Odoo leaves it EMPTY — with deadline ≥ start + BOM `produce_delay`,
+origin = the SOs it builds for, a work order on a qualifying centre),
+`po_delivery_schedule_compliance` for component POs (origin = MO refs, land by the MO's
+start), `mo_component_feasibility` / `component_stock_capacity_compliance` (a start-order
+simulation: stock + POs at their planned date, MOs consuming in sequence),
+`assembly_capacity_compliance` (qty × minutes/unit ≤ the minute limit in the centre's
+Internal Notes). Every one of these is stated in the task instruction ("set the start
+date and the due date", "assign workcenter on each work order", the origin conventions,
+"check each workcenter's Internal Notes for the minute limit"), so encoding them as
+helpers and checks is fair game. `create_mo` used to write none of it.
+
+Built (verified against a second devbox on 2065's real make scenario, `ERP_DEV_TASK=2065…
+ERP_DEV_CONTAINER=erpdev65 ERP_DEV_PORT=18070`):
+
+- `origin_consistent` (hard): every PO/MO origin token names a real SO (need =
+  commitment_date) or MO (need = date_start), and the need is on or after the document's
+  honest arrival (PO: max(date_planned, order + lead); MO: date_deadline). Empty origin is
+  judged only on documents created this session — seeded orders never carry one (22 POs,
+  9 MOs, 145 SOs across dev40) and are not ours to edit.
+- Write-time guard for the same rule in `create_po` and `create_mo` (refusal names the
+  references that do qualify — a string edit, not a re-plan).
+- `create_mo(..., date_deadline, origin, workcenter_id)`: deadline defaults to start +
+  `produce_delay`; refuses a deadline before that; moves the auto-created work order to
+  the chosen centre. `bom_for`, `workcenter_options` (min/unit, cost/unit, minutes free,
+  units that fit — the $28/unit it computes on 2065 equals the grader's option cost),
+  `workcenters()` now parses the minute limit from the note and sums minutes committed.
+- `mo_schedule` (hard), `workcenter_capacity` (hard), `mo_feasible` rewritten as the
+  start-order simulation, `so_has_commitment_date` promoted to hard (the grader returns
+  None for the whole timing family when any confirmed SO lacks one).
+- `earliest_build` now returns lead_days, date_deadline and the work-centre options.
+- Playbook: manufacturing section rewritten around the four things an MO must carry.
+
 ## Freeze
 
 *(P3.7)*
