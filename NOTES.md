@@ -945,6 +945,25 @@ ERP_DEV_CONTAINER=erpdev65 ERP_DEV_PORT=18070`):
 - `earliest_build` now returns lead_days, date_deadline and the work-centre options.
 - Playbook: manufacturing section rewritten around the four things an MO must carry.
 
+### Pass 3, the other two losses (same day)
+
+- **2017 (0.0, 65 steps, "finish")**: clean rehearsal at step 61, then
+  `finish.record_baseline()` (the docs listed it under `finish`; the bound name is the
+  function) → AttributeError → it `cat`ed the finish module over bash → the sentinel
+  literal came back in the bash output → the loop declared the episode finished. Nothing
+  was ever executed on main, and every check was vacuously green. Three fixes: only the
+  finish tool (or a python call the kernel confirms as finished) ends the episode and the
+  sentinel literal is split in source; the docs list only bound names and `finish.reset`
+  / `finish.record_baseline` exist as attributes; the gate refuses once when
+  `erp.write_log` on main is empty ("a rehearsal on a clone does not count").
+- **2014 (api_error, step 30)** and make6's 2065 (step 12): five `ConnectionResetError`s
+  inside ~30 s of backoff. A pinned probe showed 2 of 3 short completions at ~5 s and one
+  held for >10 min — the provider drops held connections. Budget is now 8 attempts / 90 s
+  cap (~5 min); make6 was stopped at ~$1.5 (quarantined) to rerun all six trials on the
+  same code once the path is stable (probe monitor: 6 consecutive quick completions).
+- Also fixed from make6's first steps: `import check` (ModuleNotFoundError) — library
+  modules are now aliased in `sys.modules`.
+
 ## Freeze
 
 *(P3.7)*

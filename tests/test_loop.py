@@ -495,3 +495,16 @@ def test_a_504_inside_a_200_body_is_retried(monkeypatch):
                         lambda r, timeout=None: Resp({"error": {"message": "bad request", "code": 400}}))
     with pytest.raises(llm_module.LLMError):
         client.complete([{"role": "user", "content": "hi"}])
+
+
+def test_sentinel_in_bash_output_does_not_end_the_episode(tmp_path):
+    """Pass 3: a trial `cat`ed the finish module over bash, the sentinel literal came back
+    in the output, and the loop declared the episode finished with nothing executed."""
+    replies = [FakeReply("bash", {"cmd": "cat finish.py"}),
+               FakeReply("finish", {"summary": "done"})]
+    loop, _, traj = build(tmp_path, replies,
+                          run_tool=lambda name, args: f"FINISH_SENTINEL = '{FINISH_SENTINEL}'"
+                          if name == "bash" else FINISH_SENTINEL)
+    result = loop.run()
+    assert result.terminal_reason == "finish"
+    assert result.steps == 2, "the bash output must not have ended the episode at step 1"

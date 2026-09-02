@@ -22,7 +22,7 @@ from pathlib import Path
 
 EXPORTS = ["finish", "FINISH_SENTINEL"]
 
-FINISH_SENTINEL = "__ERP_HARNESS_FINISHED__"
+FINISH_SENTINEL = "__ERP_HARNESS_" "FINISHED__"   # split so a printed source never contains it
 MAX_REFUSALS = 3
 SUMMARY_PATH = os.environ.get("ERP_SUMMARY_PATH", "/output/summary.md")
 
@@ -72,6 +72,14 @@ def _write_summary(summary: str, checks_text: str) -> str:
         return f"(could not write {path}: {exc})"
 
 
+def _main_write_count() -> int:
+    try:
+        from .erp import erp
+        return len(erp.write_log)
+    except Exception:       # noqa: BLE001 - no erp module in this configuration
+        return -1
+
+
 def finish(summary: str = "", client=None, gate: bool = True) -> str:
     """End the episode, if the hard checks agree.
 
@@ -103,6 +111,20 @@ def finish(summary: str = "", client=None, gate: bool = True) -> str:
                 row["evidence"] = "(already failing at task start) " + row["evidence"]
         failing = hard_fails
 
+    # A finish with nothing written to the main database is almost never the end of an
+    # ERP task; pass 3 produced one (a clean rehearsal, then the episode wandered off and
+    # ended with no orders on main — every check vacuously green). Refused once: if the
+    # task truly requires no change, the summary says so and the second call goes through.
+    if gate and not _state.get("empty_refused") and _main_write_count() == 0:
+        _state["empty_refused"] = True
+        _state["refusals"] += 1
+        return (
+            f"finish refused (attempt {_state['refusals']}/{MAX_REFUSALS}): no changes have "
+            "been written to the main database (erp.write_log is empty). A rehearsal on a "
+            "clone does not count — run the plan against `erp` itself. If this task genuinely "
+            "requires no change, say so in the summary and call finish again."
+        )
+
     if gate and failing and _state["refusals"] < MAX_REFUSALS - 1:
         _state["refusals"] += 1
         lines = "\n".join(f"  {row['check']}: {row['evidence']}" for row in failing)
@@ -123,3 +145,10 @@ def finish(summary: str = "", client=None, gate: bool = True) -> str:
             + "\n".join(f"  {row['check']}: {row['evidence']}" for row in failing)
         )
     return f"{FINISH_SENTINEL}\nsummary written to {written}{note}"
+
+
+# `finish.reset()` / `finish.record_baseline()` are what a reader of the module docs
+# reaches for; they cost a pass-3 trial its ending. Both spellings work.
+finish.reset = reset                    # type: ignore[attr-defined]
+finish.record_baseline = record_baseline  # type: ignore[attr-defined]
+finish.set_baseline = set_baseline      # type: ignore[attr-defined]

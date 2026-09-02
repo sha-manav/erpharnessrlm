@@ -37,7 +37,7 @@ from harbor.models.agent.context import AgentContext
 
 from harness.container import HarborContainer, Kernel
 from harness.llm import LLM
-from harness.loop import Loop, Trajectory
+from harness.loop import FINISH_SENTINEL, Loop, Trajectory
 from harness.tools import schemas_for
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -256,7 +256,17 @@ class ErpAgent(BaseAgent):
                     return "the python tool is not enabled for this configuration"
                 reply = kernel.run(args.get("code", ""),
                                    timeout=int(args.get("timeout") or kernel_timeout))
-                return self._render_kernel(reply)
+                output = self._render_kernel(reply)
+                if FINISH_SENTINEL in output:
+                    # The sentinel in python output is a finish only if the gate agreed:
+                    # `print(FINISH_SENTINEL)` or a printed docstring must not end the
+                    # episode around the checks.
+                    probe = kernel.run(
+                        "from lib.finish import _state as _s; print(bool(_s.get('finished')))",
+                        timeout=30)
+                    if "True" not in (probe.get("stdout") or ""):
+                        output = output.replace(FINISH_SENTINEL, "[sentinel text, not a finish]")
+                return output
 
             if name == "bash":
                 result = container.exec(args.get("cmd", ""),
@@ -272,8 +282,6 @@ class ErpAgent(BaseAgent):
                 summary = json.dumps(args.get("summary", ""))
                 if kernel is None:
                     # No kernel means no checks to run: honour the finish immediately.
-                    from harness.loop import FINISH_SENTINEL
-
                     return f"{FINISH_SENTINEL}\n(no check gate in this configuration)"
                 code = (
                     "from lib.finish import finish as _finish\n"

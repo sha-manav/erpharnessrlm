@@ -30,7 +30,7 @@ from typing import Any, Callable
 from harness.llm import LLM, LLMError, Usage
 from harness.lib.fmt import PageStore
 
-FINISH_SENTINEL = "__ERP_HARNESS_FINISHED__"
+FINISH_SENTINEL = "__ERP_HARNESS_" "FINISHED__"   # split so a printed source never contains it
 REPEAT_LIMIT = 3
 
 
@@ -238,7 +238,11 @@ class Loop:
                     output=shown, usage=None, latency_s=latency,
                 )
 
-                if FINISH_SENTINEL in (output or ""):
+                # Only the finish tool ends the episode (or a python call whose output the
+                # agent verified as a real finish). A pass-3 trial ended as "finish" with
+                # nothing executed because it `cat`ed the finish module over bash and the
+                # sentinel literal came back in the output.
+                if name in ("finish", "python") and FINISH_SENTINEL in (output or ""):
                     summary = args.get("summary", "")
                     return self._done("finish", summary)
 
