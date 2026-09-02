@@ -31,11 +31,20 @@ class Plan:
 
     def __init__(self):
         self.items: list[dict] = []
+        self.objective: str = ""
 
-    def set(self, texts: list[str]) -> "Plan":
-        """Replace the whole plan. Use once, at the start."""
+    def set(self, texts: list[str], objective: str = "") -> "Plan":
+        """Replace the whole plan. Use once, at the start.
+
+        `objective` is the task's stated objective, verbatim — what a plan is optimised
+        for. It is echoed in every status reminder, because a make7 trial met every
+        constraint and lost by optimising cost where the task said "keep as much shared
+        workcenter capacity open as possible; spend lowest only on ties".
+        """
         self.items = [{"id": i, "text": str(text), "status": "todo", "note": ""}
                       for i, text in enumerate(texts, start=1)]
+        if objective:
+            self.objective = str(objective).strip()
         return self
 
     def add(self, text: str) -> int:
@@ -69,9 +78,11 @@ class Plan:
         done = [i for i in self.items if i["status"] == "done"]
         open_items = [i for i in self.items if i["status"] != "done"]
         lines = [f"{len(done)}/{len(self.items)} done"]
+        if self.objective:
+            lines.append(f"objective: {self.objective[:160]}")
         # SUMMARY_LINES caps the whole block, header and overflow note included: this text
         # is re-injected every ledger_k steps, so it has to stay a fixed small cost.
-        room = SUMMARY_LINES - 1
+        room = SUMMARY_LINES - len(lines)
         shown = open_items if len(open_items) <= room else open_items[: room - 1]
         for item in shown:
             note = f" — {item['note']}" if item["note"] else ""

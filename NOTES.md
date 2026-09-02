@@ -977,6 +977,29 @@ the true shortfall, so `erp.cheapest_buy(product_id, qty, need_by)` now solves i
 on the 2109 numbers), and `earliest_build(..., need_by=)` sources short components that
 way instead of "fastest vendor".
 
+### make7 final (2026-09-02): 5/7, and the gate for dev40
+
+| task | A_pi | C v0 | C now |
+|---|---|---|---|
+| 2004 buy-only baseline | 100 | 100 | **100** |
+| 2017 fixed down-payment | 22.8 | 100 | **100** |
+| 2065 single BOM, single WC | 20.4 | 20.8 | **100** |
+| 2086 split by capacity | 20.3 | 0.0 | 40.0 (objective) |
+| 2109 sub-assembly lowest cost | 20.0 | 20.0 | 96.9 (spend) |
+| 2192 manufacture-only | 100 | 19.7 | **100** |
+| 2208 lowest cost, seeded | 100 | 98.0 | **100** |
+
+A 3/7, v0 2/7, C 5/7; mean reward 91.0, cache 81%, 0 API errors, $0.61/task, 0 refusals
+with 10 rehearsal FAILs cleared before finish (the checkpoint criterion now counts
+either). Both misses are optimality with every constraint green: 2109 spend (fixed by
+`cheapest_buy`, landed after the run), 2086 a stated-objective miss — "keep as much
+shared workcenter capacity open as possible; spend lowest on ties" — where the model
+optimised cost (1,760 WC minutes vs the reference's 45). `plan.set(..., objective=)` now
+carries the task's objective verbatim and echoes it in every status reminder; the
+contract says cost is the objective only when the task says so.
+
+dev40 launched on this code (commit below) under scripts/paired.py's stop rule.
+
 ## Freeze
 
 *(P3.7)*

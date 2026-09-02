@@ -75,7 +75,7 @@ A task ledger the agent maintains and the loop re-injects (PLAN.md P2.5).
 Bound in your kernel: `plan`, `Plan`.
 
 **class `Plan`** — An ordered list of steps with a status each. Ids are 1-based and stable.
-- `set(texts)` — Replace the whole plan. Use once, at the start.
+- `set(texts, objective='')` — Replace the whole plan. Use once, at the start.
 - `add(text)` — Append one step and return its id.
 - `update(item_id, status, note='')`
 - `show()`

@@ -80,3 +80,13 @@ def test_completion_helpers():
 def test_show_renders_a_table():
     text = str(Plan().set(["read instruction"]).show())
     assert "plan" in text and "read instruction" in text and "todo" in text
+
+
+def test_objective_is_kept_and_echoed_in_the_summary():
+    from lib.plan import Plan
+
+    plan = Plan().set(["a", "b"], objective="keep as much shared workcenter capacity open as possible")
+    assert plan.objective.startswith("keep as much")
+    assert "objective: keep as much" in plan.summary()
+    plan.update(1, "done")
+    assert plan.summary().splitlines()[1].startswith("objective:")

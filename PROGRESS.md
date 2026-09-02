@@ -24,7 +24,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
 - P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
 - P2.8 agent.py (Harbor)      | done   | 2026-09-02 | C_full and B_bash dev5 smokes both complete cleanly (finish:5); 6 bugs found and fixed via smokes
-- P2.9 v0 smoke + dev point   | doing  | 2026-09-02 | pass 1 → timeline false negative; pass 2 3/5, cache 76–80%, force=True hole → no_fabricated_receipts; pass 3 closed it, then 2004 lost on origin semantics (all harness checks green) → origin_consistent + MO family (deadline/origin/workcenter/capacity, start-order component sim). Gate now: make6 (2004 + 5 make families), then dev40
+- P2.9 v0 smoke + dev point   | doing  | 2026-09-02 | passes 1–3 fixed timeline/force/origin/finish-exit defects; make7 gate 5/7 (A 3/7, v0 2/7), 81% cache, 0 API errors; misses are spend/objective → cheapest_buy + plan objective. dev40 C_full running under the paired stop rule
 
 ## Phase 3 — Harness v1
 - P3.1 lib/db.py              | done   | 2026-09-02 | read-only SQL enforced by a Postgres ro_agent role, not by string matching; 5 live tests

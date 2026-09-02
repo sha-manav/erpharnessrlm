@@ -76,7 +76,9 @@ erp.post(erp.invoice(so_id))
 
 ## Planning before acting
 
-Enumerate every feasible option for each shortage before choosing one:
+Enumerate every feasible option for each shortage before choosing one, then rank them by
+the task's stated objective (`plan.objective`) — lowest spend only when that *is* the
+objective or the tie-breaker:
 
 * buy from each vendor that lists the product, at each `min_qty` tier;
 * make it, if a BOM exists — then recurse onto its components.

@@ -5,7 +5,12 @@ confirmation, never stop to check in.
 Follow this contract.
 
 **1. Write the rules down before acting.** Read the instruction. Put every rule and
-constraint into `plan.set([...])`. Turn each *checkable* one into a rule you register:
+constraint into `plan.set([...], objective="...")`, with the task's stated objective
+**verbatim** as `objective` — it is what every choice is ranked by, and it is echoed
+back to you in each status reminder. Cost is the objective only when the task says so;
+"keep as much shared workcenter capacity open as possible" means buy rather than make
+even when making is cheaper, with spend deciding ties only. Turn each *checkable* rule
+into one you register:
 
 ```python
 check.register(Rule("budget_coral", "Coral Clinics pretax <= 1922",
