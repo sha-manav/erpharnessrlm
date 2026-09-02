@@ -98,6 +98,8 @@ def preflight_model(model: dict, api_key: str) -> dict:
         "max_tokens": 4,
         "messages": [{"role": "user", "content": "ping"}],
     }
+    if model.get("provider_routing"):
+        payload["provider"] = model["provider_routing"]   # the pin the real requests carry
     request = urllib.request.Request(
         f"{model['base_url'].rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode(),
