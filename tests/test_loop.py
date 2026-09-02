@@ -508,3 +508,43 @@ def test_sentinel_in_bash_output_does_not_end_the_episode(tmp_path):
     result = loop.run()
     assert result.terminal_reason == "finish"
     assert result.steps == 2, "the bash output must not have ended the episode at step 1"
+
+
+def test_a_generation_ended_with_finish_reason_error_is_retried(monkeypatch):
+    """dev40's first attempt: a 21-minute reasoning run the provider ended with
+    finish_reason "error" and no message. Retrying is cheaper than a nudge turn."""
+    import harness.llm as llm_module
+
+    attempts = {"n": 0}
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self.body).encode()
+
+    def fake_urlopen(request, timeout=None):
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            return Resp({"choices": [{"message": {"role": "assistant", "content": ""},
+                                      "finish_reason": "error"}],
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 13570}, "provider": "F"})
+        return Resp({"choices": [{"message": {"role": "assistant", "content": "ok"},
+                                  "finish_reason": "stop"}],
+                     "usage": {"prompt_tokens": 5, "completion_tokens": 1}, "provider": "F"})
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _s: None)
+    client = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "k")
+    assert client.complete([{"role": "user", "content": "hi"}]).text == "ok"
+    assert attempts["n"] == 2
+
+
+def test_reasoning_budget_from_the_model_spec_is_sent():
+    import harness.llm as llm_module
+
+    client = llm_module.LLM({"base_url": "https://example.invalid", "model": "m",
+                             "reasoning": {"max_tokens": 6000}}, "k")
+    assert client._payload([{"role": "user", "content": "hi"}], None)["reasoning"] == {"max_tokens": 6000}
+    plain = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "k")
+    assert "reasoning" not in plain._payload([{"role": "user", "content": "hi"}], None)

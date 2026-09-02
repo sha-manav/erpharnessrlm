@@ -135,6 +135,11 @@ class LLM:
             payload["tool_choice"] = "auto"
         if self.spec.get("provider_routing"):
             payload["provider"] = self.spec["provider_routing"]
+        if self.spec.get("reasoning"):
+            # A thinking budget. dev40 (first attempt) had steps of 13,570 and 9,882
+            # completion tokens with 0-66 tokens of code — 20-minute requests that the
+            # path resets. Set per model in configs/models.yaml; absent means provider default.
+            payload["reasoning"] = self.spec["reasoning"]
         payload["usage"] = {"include": True}
         return payload
 
@@ -172,6 +177,13 @@ class LLM:
                 usage = _parse_usage(raw)
                 self.total.add(usage)
                 self.calls += 1
+                choice0 = (raw.get("choices") or [{}])[0] or {}
+                message0 = choice0.get("message") or {}
+                if choice0.get("finish_reason") == "error" and not message0.get("tool_calls"):
+                    # The provider gave up mid-generation (seen after a 21-minute reasoning
+                    # run). Nothing usable came back; retrying is cheaper than a nudge turn.
+                    last_error = "provider ended the generation with finish_reason=error"
+                    raise _RetryableBody(last_error)
                 provider = raw.get("provider")
                 if provider:
                     self.providers[provider] = self.providers.get(provider, 0) + 1
