@@ -206,7 +206,7 @@ def test_delivery_without_an_invoice_is_detected(erp, offer):
     if free.get(product_id, 0) < 1:
         po_id = erp.create_po(offer["vendor_id"], [(product_id, max(offer["min_qty"], 1))])
         erp.confirm_po(po_id)
-        erp.receive(po_id)
+        erp.receive(po_id, force=True)
 
     partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
     partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
@@ -416,8 +416,9 @@ def test_an_mo_without_components_is_detected(erp):
                                        [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
                                        ["id"], limit=1)[0]["id"])
 
-    # A quantity far beyond any component stock, starting tomorrow.
-    mo_id = erp.create_mo(product_id, 10_000, date_start="2026-09-03 08:00:00")
+    # A quantity far beyond any component stock, starting tomorrow. force=True bypasses
+    # the write-time guard: this test exercises the CHECK on an MO that got through.
+    mo_id = erp.create_mo(product_id, 10_000, date_start="2026-09-03 08:00:00", force=True)
     erp.confirm_mo(mo_id)
     try:
         table = check.invariants(erp)
@@ -453,8 +454,8 @@ def test_the_gate_now_refuses_on_a_late_receipt(erp, offer, tmp_path):
         erp.cancel("sale.order", so_id)
 
 
-def test_preexisting_failures_are_reported_but_do_not_block(erp, offer, tmp_path):
-    """Seeded scenarios can violate an invariant on arrival; that must not burn the gate."""
+def test_preexisting_failures_are_labelled_but_still_block(erp, offer, tmp_path):
+    """A repair-plan task's whole job is what was already broken: label it, still refuse."""
     from lib import check, finish as finish_module
     from lib.check import Rule
 
@@ -462,15 +463,8 @@ def test_preexisting_failures_are_reported_but_do_not_block(erp, offer, tmp_path
     check.register(Rule("inherited", "already broken when we arrived", lambda c: (False, "seeded")))
     finish_module.set_baseline(["inherited"])
     result = finish_module.finish("done", client=erp)
-    assert finish_module.FINISH_SENTINEL in result
-    assert "pre-existing" in (tmp_path / "summary.md").read_text()
-
-    # A NEW failure is still refused, baseline or not.
-    finish_module.reset()
-    finish_module.set_baseline(["inherited"])
-    check.register(Rule("fresh", "caused by the agent", lambda c: (False, "new")))
-    result = finish_module.finish("done", client=erp)
-    assert "finish refused" in result and "fresh" in result
+    assert "finish refused" in result
+    assert "already failing at task start" in result
 
 
 def test_an_optimistic_planned_date_does_not_fool_the_timeline_check(erp, offer):
@@ -500,7 +494,7 @@ def test_an_optimistic_planned_date_does_not_fool_the_timeline_check(erp, offer)
         "order_line": [(0, 0, {"product_id": o["product_id"], "product_uom_qty": 5})]}])
     erp.call("sale.order", "action_confirm", [[so_id]])
     po_id = erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 5))],
-                          date_planned=wishful)
+                          date_planned=wishful, force=True)   # bypass the write-time guard
     erp.confirm_po(po_id)
     try:
         table = check.invariants(erp)

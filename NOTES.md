@@ -846,6 +846,18 @@ cache ≥ 60%, ≥1 refusal subsequently resolved, 0 NameErrors, 0 api_errors.
 
 ## Checkpoint pass 1 (2026-09-02) — what the model does with a working gate
 
+Final: **3/5 pass, mean reward 67.2, 27.2 steps, $0.35/task** — parity with config A on the
+same five tasks (3/5, 68.8, 17.8 steps, $0.23) *before* any of the fixes below were in.
+Two fails: `2017` (late receipt the old check missed) and `2024` (killed at step 25 by a
+504 delivered inside a 200 body, which only HTTP-status retries covered — fixed).
+
+After pass 1, three write-time guards were added so the losing move cannot be written at
+all: `create_po` refuses a `date_planned` earlier than order date + lead time; `receive`
+refuses goods not yet due; `create_mo` refuses a `date_start` before components can be on
+hand. Each names the date that works and takes `force=True` as the escape hatch. The
+finish baseline now labels pre-existing failures instead of exempting them — 28 of 300
+tasks are repair plans, where fixing what was already broken is the job.
+
 dev5, N=3, three trials scored before the run finished: 2 passes at 100.0, one fail at
 22.8 (`2017`). Against the pre-registered bar: NameErrors 0 (pass), api_errors 0 (pass),
 **cache 39% (fail)**, **refusals 0 (fail)**. Each failure traced and fixed:

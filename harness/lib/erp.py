@@ -98,6 +98,13 @@ def _ids(value: int | Iterable[int] | None) -> list[int] | None:
     return list(value)
 
 
+def _add_days(stamp: str, days: float) -> str:
+    from datetime import datetime, timedelta
+
+    base = datetime.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")
+    return (base + timedelta(days=float(days))).strftime("%Y-%m-%d %H:%M:%S")
+
+
 class Erp:
     """One authenticated connection to one database."""
 
@@ -516,14 +523,37 @@ class Erp:
 
     # -- writes ---------------------------------------------------------------
     def create_po(self, vendor_id: int, lines: Sequence[tuple], date_planned: str | None = None,
-                  origin: str | None = None) -> int:
+                  origin: str | None = None, force: bool = False) -> int:
         """Create a purchase order. `lines` = [(product_id, qty[, price_unit[, date_planned]])].
 
         Calls `purchase.order.create` with `order_line` command tuples. Odoo's onchange
         defaults do not fire over RPC, so an omitted `price_unit` is looked up from the
         vendor's `product.supplierinfo` tier for that quantity and written explicitly —
         otherwise the line silently prices at 0.00.
+
+        **Refuses a `date_planned` the vendor cannot meet** (earlier than order date + the
+        vendor's lead time) unless `force=True`. This is the write-time form of the check
+        behind 17 of 23 stock-harness failures: Odoo would accept the date, and the plan
+        would fail on timing. The error names the earliest date that works.
         """
+        if not force:
+            today = self.today()
+            for line in lines:
+                product_id = line[0]
+                line_date = line[3] if len(line) > 3 and line[3] else date_planned
+                if not line_date:
+                    continue
+                delay = self._delay_for(vendor_id, product_id)
+                if delay is None:
+                    continue
+                earliest = _add_days(today, delay)
+                if line_date[:10] < earliest[:10]:
+                    raise OdooError(
+                        f"date_planned {line_date[:10]} for product {product_id} is before "
+                        f"the vendor's earliest delivery {earliest[:10]} (order date {today[:10]} "
+                        f"+ {delay}d lead time). Use that date, pick a faster vendor via "
+                        f"erp.feasible_vendors(...), or pass force=True if you know better.",
+                        "purchase.order", "create_po")
         commands = []
         for line in lines:
             product_id, qty = line[0], line[1]
@@ -541,6 +571,18 @@ class Erp:
         if origin:
             order["origin"] = origin
         return self.call("purchase.order", "create", [order])
+
+    def _delay_for(self, vendor_id: int, product_id: int):
+        """Lead time in days for this vendor/product, or None if the vendor does not list it."""
+        template = self.search_read(
+            "product.product", [("id", "=", product_id)], ["product_tmpl_id"], limit=1)
+        template_id = _id_of(template[0]["product_tmpl_id"]) if template else None
+        offers = self.search_read(
+            "product.supplierinfo",
+            ["&", ("partner_id", "=", vendor_id),
+             "|", ("product_id", "=", product_id), ("product_tmpl_id", "=", template_id)],
+            ["delay"], limit=10)
+        return max((o["delay"] or 0) for o in offers) if offers else None
 
     def vendor_price(self, vendor_id: int, product_id: int, qty: float) -> float:
         """The supplierinfo price for this vendor/product at this quantity tier."""
@@ -561,8 +603,26 @@ class Erp:
         """`purchase.order.button_confirm`."""
         return self.call("purchase.order", "button_confirm", [[po_id]])
 
-    def receive(self, po_id: int) -> list[int]:
-        """Validate every incoming picking of a PO. Returns the picking ids validated."""
+    def receive(self, po_id: int, force: bool = False) -> list[int]:
+        """Validate every incoming picking of a PO. Returns the picking ids validated.
+
+        **Refuses while the goods are not yet due** (any line's planned date is still in
+        the future) unless `force=True`. Validating a receipt for goods that have not had
+        time to arrive fabricates stock; 14 of 17 winning stock-harness trials never
+        validated a receipt at all. In these tasks a confirmed PO is normally the end state.
+        """
+        if not force:
+            today = self.today()[:10]
+            pending = [l for l in self.po_lines([po_id]).all()
+                       if l["date_planned"] and l["date_planned"][:10] > today
+                       and (l["qty_received"] or 0) < (l["product_qty"] or 0)]
+            if pending:
+                soonest = min(l["date_planned"][:10] for l in pending)
+                raise OdooError(
+                    f"goods on this PO are not due until {soonest} (today is {today}); "
+                    "receiving now would record stock that has not arrived. Leave the PO "
+                    "confirmed, or pass force=True if the task explicitly says to receive.",
+                    "purchase.order", "receive")
         pickings = self.search_read(
             "stock.picking", [("id", "in", self._po_picking_ids(po_id)),
                               ("state", "not in", ("done", "cancel"))], ["name"], limit=50)
@@ -575,8 +635,40 @@ class Erp:
         return rows[0]["picking_ids"] if rows else []
 
     def create_mo(self, product_id: int, qty: float, bom_id: int | None = None,
-                  date_start: str | None = None) -> int:
-        """`mrp.production.create`. Odoo picks the BOM if one is not named."""
+                  date_start: str | None = None, force: bool = False) -> int:
+        """`mrp.production.create`. Odoo picks the BOM if one is not named.
+
+        **Refuses a `date_start` before the components can be on hand** (per
+        `earliest_build`) unless `force=True` — the manufacturing half of the timing rule.
+        Components already ordered on a PO landing before date_start count as available.
+        """
+        if date_start and not force:
+            plan = self.earliest_build(product_id, qty)
+            if plan.get("unsourceable"):
+                raise OdooError(
+                    f"no vendor lists these components: {plan['unsourceable']}; the MO "
+                    "cannot be built from purchases. Check stock, BOMs, or pass force=True.",
+                    "mrp.production", "create_mo")
+            # Credit components already on confirmed POs that land in time.
+            incoming_ok = True
+            for comp in plan["components"]:
+                if comp.get("buy"):
+                    on_order = sum(
+                        (l["product_qty"] or 0) - (l["qty_received"] or 0)
+                        for l in self.search_read(
+                            "purchase.order.line",
+                            [("product_id", "=", comp["component_id"]),
+                             ("state", "in", ("purchase", "done")),
+                             ("date_planned", "<=", date_start)],
+                            ["product_qty", "qty_received"], limit=50))
+                    if on_order + comp["free_now"] + 1e-6 < comp["needed"]:
+                        incoming_ok = False
+            if not incoming_ok and date_start[:10] < plan["date_start"][:10]:
+                raise OdooError(
+                    f"date_start {date_start[:10]} is before the components can be on hand "
+                    f"({plan['date_start'][:10]}). Order them first (erp.earliest_build says "
+                    "what and from whom), start the MO no earlier than that, or pass "
+                    "force=True.", "mrp.production", "create_mo")
         values: dict[str, Any] = {"product_id": product_id, "product_qty": qty}
         if bom_id:
             values["bom_id"] = bom_id

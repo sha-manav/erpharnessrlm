@@ -457,3 +457,41 @@ def test_transient_402_is_retried_but_a_real_one_is_not(monkeypatch):
         except llm_module.LLMError:
             pass
         assert attempts["n"] == expected_attempts, (detail[:40], attempts["n"])
+
+
+def test_a_504_inside_a_200_body_is_retried(monkeypatch):
+    """OpenRouter can hand back an upstream failure as a 200 with an error body.
+
+    {'message': 'A Timeout Occurred', 'code': 504} ended a 25-step checkpoint trial
+    mid-invoice because only HTTP-status 504s were retried.
+    """
+    import harness.llm as llm_module
+
+    attempts = {"n": 0}
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self.body).encode()
+
+    def fake_urlopen(request, timeout=None):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            return Resp({"error": {"message": "A Timeout Occurred", "code": 504}})
+        return Resp({"choices": [{"message": {"role": "assistant", "content": "ok"},
+                                  "finish_reason": "stop"}],
+                     "usage": {"prompt_tokens": 5, "completion_tokens": 1}, "provider": "F"})
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _s: None)
+    client = llm_module.LLM({"base_url": "https://example.invalid", "model": "m"}, "k")
+    assert client.complete([{"role": "user", "content": "hi"}]).text == "ok"
+    assert attempts["n"] == 3
+
+    # A non-retryable body error still fails fast.
+    attempts["n"] = 0
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen",
+                        lambda r, timeout=None: Resp({"error": {"message": "bad request", "code": 400}}))
+    with pytest.raises(llm_module.LLMError):
+        client.complete([{"role": "user", "content": "hi"}])

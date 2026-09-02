@@ -446,6 +446,37 @@ def _demand_covered(client) -> tuple[bool, str]:
     return True, f"every confirmed order line has supply behind it ({len(lines)} line(s))"
 
 
+def _po_has_origin(client) -> tuple[bool, str]:
+    """Soft — every purchase order says what it is for.
+
+    `origin` is Odoo's traceability field (the sales order or MO a purchase serves). Five
+    stock-harness failures involved purchases created without it. Soft because it is
+    hygiene, not arithmetic; but the model sees it in every check table.
+    """
+    rows = client.search_read(
+        "purchase.order", [("state", "not in", ("cancel",))], ["name", "origin"], limit=200)
+    missing = [r["name"] for r in rows if not (r.get("origin") or "").strip()]
+    if missing:
+        return False, (f"{len(missing)} PO(s) with an empty origin: {', '.join(missing[:6])}. "
+                       "Set origin to the sales order / MO reference(s) the purchase serves.")
+    return True, f"every purchase order carries an origin ({len(rows)})"
+
+
+def _so_has_commitment_date(client) -> tuple[bool, str]:
+    """Soft — every confirmed customer order has a commitment date.
+
+    Without it the timing checks have nothing to compare a receipt against, and the
+    customer has no promised date. Tasks that state a due date expect it on the order.
+    """
+    rows = client.search_read(
+        "sale.order", [("state", "=", "sale")], ["name", "commitment_date"], limit=200)
+    missing = [r["name"] for r in rows if not r.get("commitment_date")]
+    if missing:
+        return False, (f"{len(missing)} confirmed SO(s) without a commitment_date: "
+                       f"{', '.join(missing[:6])}. Set it to the customer's due date.")
+    return True, f"every confirmed sales order has a commitment date ({len(rows)})"
+
+
 INVARIANTS: list[Check] = [
     Check("drafts", "no dangling draft documents", True, _no_dangling_drafts),
     Check("stock_non_negative", "stock is non-negative everywhere", True, _stock_non_negative),
@@ -459,6 +490,9 @@ INVARIANTS: list[Check] = [
     Check("timeline_feasible", "receipts land before the demand they feed", True,
           _timeline_feasible),
     Check("mo_feasible", "MO components are available before it starts", True, _mo_feasible),
+    Check("po_has_origin", "purchase orders say what they are for", False, _po_has_origin),
+    Check("so_has_commitment_date", "confirmed sales orders carry a due date", False,
+          _so_has_commitment_date),
 ]
 
 

@@ -48,6 +48,10 @@ class LLMError(RuntimeError):
     """A request that could not be completed after retries."""
 
 
+class _RetryableBody(Exception):
+    """An error the provider put in a 200 body that is worth another attempt."""
+
+
 @dataclass
 class Usage:
     input: int = 0
@@ -149,7 +153,21 @@ class LLM:
                 with urllib.request.urlopen(request, timeout=self.spec.get("timeout_s", 900)) as response:
                     raw = json.loads(response.read())
                 if raw.get("error"):
-                    raise LLMError(str(raw["error"])[:300])
+                    # OpenRouter can deliver an upstream failure as a 200 with an error
+                    # body -- {'message': 'A Timeout Occurred', 'code': 504} killed a
+                    # 25-step trial mid-invoice because only HTTP-status 504s were retried.
+                    err = raw["error"]
+                    code = err.get("code") if isinstance(err, dict) else None
+                    detail = str(err)[:300]
+                    try:
+                        code = int(code)
+                    except (TypeError, ValueError):
+                        code = None
+                    retryable = code in RETRY_STATUS or (code == 402 and TRANSIENT_402 in detail)
+                    if not retryable:
+                        raise LLMError(detail)
+                    last_error = f"body error {code}: {detail}"
+                    raise _RetryableBody(last_error)
                 choice = (raw.get("choices") or [{}])[0]
                 usage = _parse_usage(raw)
                 self.total.add(usage)
@@ -165,6 +183,8 @@ class LLM:
                     latency_s=round(time.time() - started, 2),
                     raw=raw,
                 )
+            except _RetryableBody as exc:
+                last_error = str(exc)
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode(errors="replace")[:300]
                 last_error = f"HTTP {exc.code}: {detail}"

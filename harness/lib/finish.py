@@ -39,10 +39,9 @@ def reset() -> None:
 def set_baseline(failing_ids) -> list[str]:
     """Record checks that were already failing before the agent acted.
 
-    Seeded scenarios ship with pre-existing orders, and some of those violate an
-    invariant on arrival. Refusing `finish` over a condition the agent did not cause and
-    cannot be expected to repair burns its attempts on nothing, so those are reported but
-    never block. Everything the agent touches is still held to every check.
+    Used to label, not to exempt: a repair-plan task's whole job is to fix what was
+    already broken. The label explains the failure's origin so the model can decide
+    whether to repair it or justify it in the summary.
     """
     _state["baseline"] = set(failing_ids)
     return sorted(_state["baseline"])
@@ -93,11 +92,16 @@ def finish(summary: str = "", client=None, gate: bool = True) -> str:
         table = check_module.all(client)
         checks_text = str(table)
         hard_fails = [r for r in table.all() if r["status"] == "FAIL" and r["hard"] == "hard"]
-        preexisting = [r for r in hard_fails if r["check"] in _state["baseline"]]
-        failing = [r for r in hard_fails if r["check"] not in _state["baseline"]]
-        if preexisting:
-            checks_text += "\n(pre-existing at task start, not blocking: " + \
-                ", ".join(r["check"] for r in preexisting) + ")"
+        # A failure that already existed at task start is labelled, but it still blocks.
+        # Excluding it was wrong: 28 of the 300 tasks are repair plans, where fixing what
+        # was already broken IS the task, and the seeded patterns ship draft orders that
+        # are meant to be confirmed. The label tells the model why the check fails and
+        # that the summary must say so if it genuinely cannot be repaired; after three
+        # refusals the episode ends regardless.
+        for row in hard_fails:
+            if row["check"] in _state["baseline"]:
+                row["evidence"] = "(already failing at task start) " + row["evidence"]
+        failing = hard_fails
 
     if gate and failing and _state["refusals"] < MAX_REFUSALS - 1:
         _state["refusals"] += 1

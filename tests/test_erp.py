@@ -117,7 +117,7 @@ def test_po_create_confirm_receive_moves_stock(erp, catalogue):
     erp.confirm_po(po_id)
     assert erp.purchase_orders(ids=[po_id]).all()[0]["state"] == "purchase"
 
-    received = erp.receive(po_id)
+    received = erp.receive(po_id, force=True)      # goods are not due yet; this tests the flow
     assert received, "confirming a PO should create a receipt to validate"
 
     after = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id])}
@@ -157,7 +157,7 @@ def test_mo_create_confirm_produce_consumes_and_produces(erp):
         buy_qty = max(offers[0]["min_qty"], needed)
         po_id = erp.create_po(offers[0]["vendor_id"], [(component_id, buy_qty)])
         erp.confirm_po(po_id)
-        erp.receive(po_id)
+        erp.receive(po_id, force=True)
 
     before = {r["product_id"]: r["on_hand"] for r in erp.stock([product_id, component_id])}
     mo_id = erp.create_mo(product_id, 1)
@@ -185,7 +185,7 @@ def test_so_confirm_deliver_invoice_post(erp, catalogue):
         po_id = erp.create_po(catalogue["vendor_id"],
                               [(product_id, max(catalogue["min_qty"], 1))])
         erp.confirm_po(po_id)
-        erp.receive(po_id)
+        erp.receive(po_id, force=True)
 
     so_id = erp.call("sale.order", "create", [{
         "partner_id": partner_id,
@@ -264,3 +264,71 @@ def test_earliest_build_accounts_for_component_lead_times(erp):
         if comp.get("ready") is not None and comp.get("buy"):
             assert comp["ready"] <= plan["date_start"]     # start waits for the slowest part
             assert comp["from"]
+
+
+# -- write-time guards --------------------------------------------------------
+def test_create_po_refuses_a_date_the_vendor_cannot_meet(erp):
+    """The 17-of-23 mistake, stopped at the moment it would be written."""
+    from lib.erp import OdooError
+
+    offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
+    if not offers:
+        pytest.skip("no vendor with a 3+ day lead time")
+    o = offers[0]
+    with pytest.raises(OdooError) as excinfo:
+        erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 1))],
+                      date_planned=erp.today())
+    message = str(excinfo.value)
+    assert "earliest delivery" in message and "feasible_vendors" in message
+
+    # The date it names is accepted.
+    earliest = message.split("earliest delivery ")[1][:10]
+    po_id = erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 1))],
+                          date_planned=f"{earliest} 08:00:00")
+    assert isinstance(po_id, int)
+    erp.cancel("purchase.order", po_id)
+
+    # force=True is the escape hatch.
+    po_id = erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 1))],
+                          date_planned=erp.today(), force=True)
+    erp.cancel("purchase.order", po_id)
+
+
+def test_receive_refuses_goods_that_are_not_due(erp, catalogue):
+    from lib.erp import OdooError
+
+    from datetime import datetime, timedelta
+    later = (datetime.utcnow() + timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+    po_id = erp.create_po(catalogue["vendor_id"], [(catalogue["product_id"], max(catalogue["min_qty"], 1))],
+                          date_planned=later)
+    erp.confirm_po(po_id)
+    try:
+        with pytest.raises(OdooError) as excinfo:
+            erp.receive(po_id)
+        assert "not due until" in str(excinfo.value)
+        assert erp.po_lines([po_id]).all()[0]["qty_received"] == 0   # nothing was fabricated
+    finally:
+        erp.cancel("purchase.order", po_id)
+
+
+def test_create_mo_refuses_a_start_before_components_can_exist(erp):
+    from lib.erp import OdooError
+
+    boms = erp.boms()
+    if not len(boms):
+        pytest.skip("no manufacturing route in this scenario")
+    bom = boms.all()[0]
+    finished = erp.search_read("mrp.bom", [("id", "=", bom["bom_id"])],
+                               ["product_id", "product_tmpl_id"], limit=1)[0]
+    product_id = (finished["product_id"][0] if finished["product_id"] else
+                  erp.search_read("product.product",
+                                  [("product_tmpl_id", "=", finished["product_tmpl_id"][0])],
+                                  ["id"], limit=1)[0]["id"])
+    plan = erp.earliest_build(product_id, 10_000)
+    if plan["date_start"][:10] <= erp.today()[:10]:
+        pytest.skip("components for 10,000 units are somehow on hand")
+    with pytest.raises(OdooError) as excinfo:
+        erp.create_mo(product_id, 10_000, date_start=erp.today())
+    assert "components can be on hand" in str(excinfo.value)
+    mo_id = erp.create_mo(product_id, 10_000, date_start=erp.today(), force=True)
+    erp.cancel("mrp.production", mo_id)
