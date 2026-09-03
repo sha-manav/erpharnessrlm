@@ -194,6 +194,7 @@ class ErpAgent(BaseAgent):
                 step_cap=self.config.get("step_cap", 150),
                 token_cap=self.config.get("token_cap", 1_500_000),
                 ledger_k=self.config.get("ledger_k", 0),
+                time_budget_s=self.config.get("time_budget_s", 0),
                 ledger_summary=self._ledger_summary(kernel) if kernel else None,
                 briefing=briefing,
                 logger=self.logger,

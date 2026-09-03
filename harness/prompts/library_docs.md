@@ -38,6 +38,8 @@ Bound in your kernel: `erp`, `Erp`, `OdooError`.
 - `cheapest_buy(product_id, qty, need_by=None, order_date=None)` — The cheapest way to buy `qty` of a product: which vendors, how many from each.
 - `earliest_build(product_id, qty, order_date=None, need_by=None, _depth=0)` — When an MO for `qty` could start, given components on hand, purchasable, or buildable.
 - `create_po(vendor_id, lines, date_planned=None, origin=None, force=False)` — Create a purchase order. `lines` = [(product_id, qty[, price_unit[, date_planned]])].
+- `add_po_lines(po_id, lines)` — Add lines to an existing purchase order (draft or confirmed).
+- `origin_capacity(product_id, tokens)` — How much of `product_id` each named order can absorb: a sales order's line
 - `vendor_price(vendor_id, product_id, qty)` — The supplierinfo price for this vendor/product at this quantity tier.
 - `confirm_po(po_id)` — `purchase.order.button_confirm`.
 - `receive(po_id, force=False)` — Validate every incoming picking of a PO. Returns the picking ids validated.
@@ -46,7 +48,8 @@ Bound in your kernel: `erp`, `Erp`, `OdooError`.
 - `confirm_mo(mo_id)` — `mrp.production.action_confirm`.
 - `produce(mo_id, qty=None)` — Reserve, set `qty_producing`, consume the components, and mark done.
 - `deliver(so_id)` — Validate every outgoing picking of a sales order.
-- `invoice(so_id, method='delivered', amount=None)` — Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
+- `payment_term_id(name)` — The `account.payment.term` whose name contains `name` (e.g. "Immediate").
+- `invoice(so_id, method='delivered', amount=None, payment_term=None)` — Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
 - `post(invoice_ids)` — `account.move.action_post`.
 - `cancel(model, ids)` — Cancel records with whichever cancel method the model exposes.
 

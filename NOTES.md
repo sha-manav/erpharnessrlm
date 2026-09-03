@@ -1000,6 +1000,51 @@ contract says cost is the objective only when the task says so.
 
 dev40 launched on this code (commit below) under scripts/paired.py's stop rule.
 
+### dev40 (running): alternate work centres have no stated rate
+
+2290 (hard repair) scored 22.9 on `assembly_capacity_compliance` with my
+`workcenter_capacity` check green: the plan put 84 units on Fabrication Cell 2, which my
+helper priced at the primary operation's 45 min/unit (3,780 of 3,800 free) while the
+grader prices that centre at 55. Checked on a devbox of the same scenario: Odoo holds no
+per-centre rate — the seeded work order on that centre carries 39 × 45 = 1,755 min, and
+a work order moved there keeps 45/unit. The rate the grader uses exists only in the
+scenario file (pi failed the same rule the same way). So an alternate's rate is unknown
+to any agent; the helpers now assume `ALT_RATE_MARGIN` (1.5×) for a centre without its
+own operation, label it "assumed … (not stated)", and the playbook says to leave that
+headroom. Dev scenarios that state alternate rates put them at 1.18–1.40×.
+
+### dev40 (running): three more stated rules the library did not carry
+
+- **2279 easy repair, `po_consolidation_compliance`** (pi passed; v0 and now failed the
+  same way): kept the vendor's 12-unit PO and opened a second 4-unit PO with the same
+  vendor for the same product. "One consolidated PO per supplier offer" is in every
+  purchasing instruction. Now: `po_consolidated` (hard, confirmed orders), a write-time
+  refusal in `create_po` naming the order to extend, and `erp.add_po_lines(po_id, lines)`
+  — Odoo accepts new lines on a confirmed order.
+- **2217 split-by-capacity, `retained_order_has_expected_invoice_flow` ×3** (B_bash v0
+  failed the same): the task says "after confirming each retained order, create and post
+  exactly one linked invoice … Immediate Payment terms"; the model invoiced only the
+  three delivered orders (the playbook's default). Now: `erp.invoice(so, payment_term=)`
+  sets the term on the order and the invoices; soft `so_invoiced` lists confirmed orders
+  without a posted invoice; the playbook says a stated invoicing policy applies to every
+  retained order, delivered or not.
+- **2235 hard, killed by the task's 3600 s agent timeout** at step 40 with five plans
+  compared and none executed (pi: 0 timeouts in 40 dev40 trials; B_bash 3; C v0 2).
+  Now: `time_budget_s` (3300) — budget in the first message, elapsed time in every
+  status line, "execute now" at 70%, "finish now" at 88%.
+
+### dev40 (running): origin quantities are a flow
+
+Three trials (2156 99.4 pass, 2180 99.0 pass, 2167 96.5 fail) lost hygiene points on
+`po_origin_traceability` with every date right. The grader runs a max-flow: each PO/MO
+pushes its quantity into the orders its origin names (an SO's line quantity, or an MO's
+raw need for that component), one unit minimum per name, excess allowed only when the
+quantity is exactly the vendor's applicable tier minimum. Now: `origin_flow` (hard) runs
+the same flow; `create_po` / `create_mo` refuse a quantity the named orders cannot absorb,
+naming what each needs; `erp.origin_capacity(product_id, tokens)` exposes the numbers.
+Also on the branch since the last note: `feasible_vendors` points at `cheapest_buy`
+(2259 lost 0.35% on a hand-picked split; 2070 90.7 on the same).
+
 ## Freeze
 
 *(P3.7)*

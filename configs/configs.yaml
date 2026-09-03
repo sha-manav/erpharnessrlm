@@ -34,6 +34,9 @@ defaults:
   # and rebuilt its namespace, and the model had to redo everything step by step. The
   # cap exists to catch a hung call, not a long one.
   kernel_timeout_s: 600
+  time_budget_s: 3300      # the tasks' agent timeout is 3600 s; the loop warns at 70% and 88%
+                           # of this so a plan is executed before the cut-off (a dev40 trial
+                           # was killed at step 40 with five plans compared and none executed)
   finish_gate: false
   ledger_k: 0
   briefing: false

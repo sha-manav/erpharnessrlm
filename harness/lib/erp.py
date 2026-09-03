@@ -99,6 +99,16 @@ def _ids(value: int | Iterable[int] | None) -> list[int] | None:
     return list(value)
 
 
+# A work centre that has no operation of its own for a product has no stated rate: Odoo
+# prices a work order moved there at the primary operation's minutes and a seeded work
+# order on it carries qty x that same rate. Verified on a repair scenario's live database
+# (2290): 39 units on the alternate = 1,755 min, i.e. 45/unit, while the plan that filled
+# that centre on 45/unit failed its capacity rule. The true rate of an alternate is not in
+# the database, so the helpers assume it is slower by this factor and say so. Dev
+# scenarios that state alternate rates put them at 1.18-1.40x the primary.
+ALT_RATE_MARGIN = 1.5
+
+
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", text or "").replace("&nbsp;", " ").strip()
 
@@ -507,6 +517,17 @@ class Erp:
             ["name", "workcenter_id", "bom_id", "time_cycle_manual", "time_cycle"], limit=200)
         op_minutes = {o["id"]: (o.get("time_cycle_manual") or o.get("time_cycle") or 0.0)
                       for o in operations}
+        op_centre = {o["id"]: _id_of(o.get("workcenter_id")) for o in operations}
+
+        def rate(operation_id, centre_id) -> tuple[float | None, bool]:
+            """Minutes per unit at this centre, and whether that rate is stated."""
+            minutes = op_minutes.get(operation_id)
+            if not minutes:
+                return None, False
+            if op_centre.get(operation_id) == centre_id:
+                return minutes, True
+            return minutes * ALT_RATE_MARGIN, False
+
         committed: dict[int, float] = {}
         productions = {m["id"]: m for m in self.search_read(
             "mrp.production", [("state", "not in", ("cancel",))],
@@ -521,7 +542,7 @@ class Erp:
                 mo = productions.get(_id_of(wo.get("production_id")))
                 if wc is None or mo is None:
                     continue
-                per_unit = op_minutes.get(_id_of(wo.get("operation_id")))
+                per_unit, _stated = rate(_id_of(wo.get("operation_id")), wc)
                 minutes = (mo["product_qty"] or 0) * per_unit if per_unit else (wo.get("duration_expected") or 0)
                 committed[wc] = committed.get(wc, 0.0) + minutes
         return centres, operations, committed
@@ -547,6 +568,11 @@ class Erp:
                 product = _name_of(o.get("bom_id"))
                 ops_by_wc.setdefault(wc, []).append(
                     f"{product}: {o.get('time_cycle_manual') or o.get('time_cycle') or 0:g} min/unit")
+        for c in centres:
+            for alt in (c.get("alternative_workcenter_ids") or []):
+                for line in ops_by_wc.get(c["id"], []):
+                    ops_by_wc.setdefault(alt, []).append(
+                        f"(alternate for {c['name']}: rate not stated, assumed {ALT_RATE_MARGIN}x) {line}")
         names = {c["id"]: c["name"] for c in centres}
         rows = []
         for c in centres:
@@ -577,22 +603,26 @@ class Erp:
         for o in operations:
             if _id_of(o.get("bom_id")) != bom["id"]:
                 continue
-            minutes = o.get("time_cycle_manual") or o.get("time_cycle") or 0.0
+            stated = o.get("time_cycle_manual") or o.get("time_cycle") or 0.0
             primary = _id_of(o.get("workcenter_id"))
             for wc_id in [primary] + list((by_id.get(primary) or {}).get("alternative_workcenter_ids") or []):
                 c = by_id.get(wc_id)
                 if not c:
                     continue
+                is_primary = wc_id == primary
+                minutes = stated if is_primary else stated * ALT_RATE_MARGIN
                 limit = _minutes_limit(c.get("note") or "")
                 used = committed.get(wc_id, 0.0)
                 rows.append({
                     "workcenter_id": wc_id, "name": c["name"], "code": c.get("code") or "",
-                    "role": "primary" if wc_id == primary else "alternative",
-                    "min_per_unit": minutes, "cost_per_unit": round((c.get("costs_hour") or 0) * minutes / 60, 2),
+                    "role": "primary" if is_primary else "alternative",
+                    "min_per_unit": minutes,
+                    "rate": "stated" if is_primary else f"assumed {ALT_RATE_MARGIN}x primary (not stated)",
+                    "cost_per_unit": round((c.get("costs_hour") or 0) * minutes / 60, 2),
                     "minutes_limit": limit, "minutes_free": (round(limit - used, 1) if limit is not None else None),
                     "units_fit": (int((limit - used) // minutes) if limit is not None and minutes else None),
                 })
-        return Table(rows, ["workcenter_id", "name", "code", "role", "min_per_unit", "cost_per_unit",
+        return Table(rows, ["workcenter_id", "name", "code", "role", "min_per_unit", "rate", "cost_per_unit",
                             "minutes_limit", "minutes_free", "units_fit"], "work-centre options")
 
     def invoices(self, move_type: str = "out_invoice", state: str | None = None) -> Table:
@@ -654,9 +684,14 @@ class Erp:
                 "vendor_notes": offer["vendor_notes"],
             })
         rows.sort(key=lambda r: (r["line_total"], -r["slack_days"]))
+        # The exact min-cost split (tiers, MOQ, note-stated maxima) is one call away and
+        # is what the spend score is measured against; a plan that picked by hand from
+        # this table lost 0.35% on spend with every constraint met.
         return Table(rows, ["vendor_id", "vendor", "price", "min_qty", "order_qty",
                             "delay_days", "arrives", "slack_days", "line_total", "vendor_notes"],
-                     f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]}")
+                     f"vendors able to deliver {qty:g} of product {product_id} by {need_by[:10]} — "
+                     f"for the PO lines to write, use erp.cheapest_buy({product_id}, {qty:g}, "
+                     f"{need_by[:10]!r}) (min-cost split across these offers)")
 
     def cheapest_buy(self, product_id: int, qty: float, need_by: str | None = None,
                      order_date: str | None = None) -> Table:
@@ -830,6 +865,13 @@ class Erp:
                         "purchase.order", "create_po")
             if origin:
                 self._check_origin_feeds(vendor_id, lines, date_planned, origin)
+                for line in lines:
+                    offers = self._offers_for(vendor_id, line[0], ["min_qty"])
+                    # The tier that applies to this quantity (largest min_qty not above it).
+                    tiers = [(o["min_qty"] or 0) for o in offers if (o["min_qty"] or 0) <= line[1] + 0.01]
+                    moq = max(tiers) if tiers else None
+                    self._refuse_excess_over_origin(line[0], line[1], origin, moq, "this purchase")
+            self._check_one_po_per_offer(vendor_id, lines)
         commands = []
         for line in lines:
             product_id, qty = line[0], line[1]
@@ -847,6 +889,61 @@ class Erp:
         if origin:
             order["origin"] = origin
         return self.call("purchase.order", "create", [order])
+
+    def _check_one_po_per_offer(self, vendor_id: int, lines: Sequence[tuple]) -> None:
+        """Refuse a second open PO for a vendor/product that already has one.
+
+        One consolidated PO per supplier offer is a stated rule on every purchasing task,
+        and a repair trial lost on it alone: it kept a vendor's 12-unit PO and opened a
+        second 4-unit PO with the same vendor for the same product. The fix is to add the
+        line to the existing order (`add_po_lines`), which Odoo allows on a confirmed PO.
+        """
+        products = [line[0] for line in lines]
+        existing = self.search_read(
+            "purchase.order.line",
+            [("partner_id", "=", vendor_id), ("product_id", "in", products),
+             ("order_id.state", "in", ("purchase", "done"))],
+            ["order_id", "product_id", "product_qty"], limit=50)
+        if not existing:
+            return
+        by_po: dict[str, list[str]] = {}
+        for line in existing:
+            by_po.setdefault(line["order_id"][1], []).append(
+                f"{line['product_id'][1]} ×{line['product_qty']:g}")
+        first_po_id = existing[0]["order_id"][0]
+        shown = "; ".join(f"{po} already buys {', '.join(items)}" for po, items in by_po.items())
+        raise OdooError(
+            f"one PO per supplier offer: {shown} from this vendor. Add to it instead — "
+            f"erp.add_po_lines({first_po_id}, {[(l[0], l[1]) for l in lines]!r}) — or cancel it "
+            "and create one order for the full quantity. force=True writes a second PO anyway, "
+            "and the finish check will refuse it.",
+            "purchase.order", "create_po")
+
+    def add_po_lines(self, po_id: int, lines: Sequence[tuple]) -> list[int]:
+        """Add lines to an existing purchase order (draft or confirmed).
+
+        `lines` = [(product_id, qty[, price_unit[, date_planned]])], priced from the
+        vendor's tier when omitted, like `create_po`. Odoo accepts new lines on a confirmed
+        order and creates their receipt moves; this is how a second need from the same
+        vendor is met without a second PO.
+        """
+        order = self.get("purchase.order", [po_id], ["partner_id", "state", "date_planned"])[0]
+        if order["state"] == "cancel":
+            raise OdooError(f"PO {po_id} is cancelled; create a new order instead",
+                            "purchase.order", "add_po_lines")
+        vendor_id = _id_of(order["partner_id"])
+        created = []
+        for line in lines:
+            product_id, qty = line[0], line[1]
+            price = line[2] if len(line) > 2 and line[2] is not None else self.vendor_price(
+                vendor_id, product_id, qty)
+            values: dict[str, Any] = {"order_id": po_id, "product_id": product_id,
+                                      "product_qty": qty, "price_unit": price}
+            line_date = line[3] if len(line) > 3 and line[3] else order.get("date_planned")
+            if line_date:
+                values["date_planned"] = line_date
+            created.append(self.call("purchase.order.line", "create", [values]))
+        return created
 
     def _check_origin_feeds(self, vendor_id: int, lines: Sequence[tuple],
                             date_planned: str | None, origin: str) -> None:
@@ -872,6 +969,53 @@ class Erp:
                                    ["name", "date_start"], limit=200):
             need.setdefault(mo["name"], mo.get("date_start") or None)
         return need
+
+    def origin_capacity(self, product_id: int, tokens: Sequence[str]) -> dict[str, float]:
+        """How much of `product_id` each named order can absorb: a sales order's line
+        quantity, or a manufacturing order's need for it as a component."""
+        need: dict[str, float] = {t: 0.0 for t in tokens}
+        if not tokens:
+            return need
+        for line in self.search_read(
+                "sale.order.line",
+                [("order_id.name", "in", list(tokens)), ("product_id", "=", product_id),
+                 ("order_id.state", "not in", ("cancel",))],
+                ["order_id", "product_uom_qty"], limit=200):
+            need[line["order_id"][1]] = need.get(line["order_id"][1], 0.0) + (line["product_uom_qty"] or 0)
+        for mv in self.search_read(
+                "stock.move",
+                [("raw_material_production_id.name", "in", list(tokens)), ("product_id", "=", product_id),
+                 ("state", "!=", "cancel")],
+                ["raw_material_production_id", "product_uom_qty"], limit=200):
+            name = mv["raw_material_production_id"][1]
+            need[name] = need.get(name, 0.0) + (mv["product_uom_qty"] or 0)
+        return need
+
+    def _refuse_excess_over_origin(self, product_id: int, qty: float, origin: str,
+                                   min_qty: float | None, what: str) -> None:
+        """Refuse a quantity the named orders cannot absorb (excess allowed only when the
+        quantity is exactly the vendor's minimum). The flow rule the grader of any plan
+        applies: supply traces to the demand it names, unit for unit."""
+        tokens = [t.strip() for t in origin.split(",") if t.strip()]
+        if not tokens or qty <= 0:
+            return
+        need = self.origin_capacity(product_id, tokens)
+        none = [t for t in tokens if need.get(t, 0.0) < 1 - 1e-6]
+        capacity = sum(need.values())
+        at_minimum = min_qty is not None and abs(qty - min_qty) <= 0.01
+        if none:
+            raise OdooError(
+                f"origin refused: {', '.join(none)} need none of product {product_id}; {what} names "
+                f"only the orders that consume what it supplies. force=True writes it anyway.",
+                "origin", "quantity")
+        if capacity + 1e-6 < qty and not at_minimum:
+            detail = ", ".join(f"{t} needs {need[t]:g}" for t in tokens[:6])
+            raise OdooError(
+                f"origin refused: {what} supplies {qty:g} but the orders it names absorb {capacity:g} "
+                f"({detail}). Supply what they need, or name every order this quantity is for; a "
+                "quantity forced up to the vendor's minimum is the one allowed excess. force=True "
+                "writes it anyway, and the finish check will refuse it.",
+                "origin", "quantity")
 
     def _refuse_bad_origin(self, arrives: str, origin: str, what: str) -> None:
         """`origin` is the audit trail: "this document is for that order".
@@ -906,6 +1050,18 @@ class Erp:
             "or start earlier (erp.earliest_build). force=True writes it anyway, and the finish "
             "check will refuse it.",
             "purchase.order", "origin")
+
+    def _offers_for(self, vendor_id: int, product_id: int, fields: list[str]) -> list[dict]:
+        """This vendor's supplierinfo rows for a product, whether stored on the variant or
+        on its template (the seeds use the template)."""
+        template = self.search_read(
+            "product.product", [("id", "=", product_id)], ["product_tmpl_id"], limit=1)
+        template_id = _id_of(template[0]["product_tmpl_id"]) if template else None
+        return self.search_read(
+            "product.supplierinfo",
+            ["&", ("partner_id", "=", vendor_id),
+             "|", ("product_id", "=", product_id), ("product_tmpl_id", "=", template_id)],
+            fields, limit=20)
 
     def _delay_for(self, vendor_id: int, product_id: int):
         """Lead time in days for this vendor/product, or None if the vendor does not list it."""
@@ -1023,6 +1179,7 @@ class Erp:
                     "mrp.production", "create_mo")
         if origin and not force:
             self._refuse_bad_origin(date_deadline or date_start or "", origin, "this MO finishes")
+            self._refuse_excess_over_origin(product_id, qty, origin, None, "this MO")
         if date_start and not force:
             plan = self.earliest_build(product_id, qty)
             if plan.get("unsourceable"):
@@ -1131,10 +1288,25 @@ class Erp:
             self._validate_picking(picking["id"])
         return [p["id"] for p in pickings]
 
-    def invoice(self, so_id: int, method: str = "delivered", amount: float | None = None) -> list[int]:
+    def payment_term_id(self, name: str) -> int:
+        """The `account.payment.term` whose name contains `name` (e.g. "Immediate")."""
+        rows = self.search_read("account.payment.term", [("name", "ilike", name)], ["name"], limit=5)
+        if not rows:
+            names = [r["name"] for r in self.search_read("account.payment.term", [], ["name"], limit=20)]
+            raise OdooError(f"no payment term matching {name!r}; available: {names}",
+                            "account.payment.term", "payment_term_id")
+        exact = [r for r in rows if r["name"].lower() == name.lower()]
+        return (exact or rows)[0]["id"]
+
+    def invoice(self, so_id: int, method: str = "delivered", amount: float | None = None,
+                payment_term: str | None = None) -> list[int]:
         """Create customer invoice(s) for a sales order via `sale.advance.payment.inv`.
 
-        `method`: `"delivered"` (regular invoice for what has shipped), `"percentage"` (a
+        `payment_term`: a payment-term name to set on the order and the new invoices
+        ("Immediate Payment"), when the task names one.
+
+        `method`: `"delivered"` (regular invoice for what has shipped, or for the ordered
+        quantities when the product's invoice policy is "order"), `"percentage"` (a
         down payment of `amount` percent of the order), or `"fixed"` (a down payment of
         `amount` currency units). A down-payment flow is: `invoice(so, "percentage", 20)`,
         post it, deliver, then `invoice(so, "delivered")` for the balance and post that.
@@ -1142,6 +1314,12 @@ class Erp:
         Returns the new `account.move` ids (the difference in `invoice_ids` around the call
         — the wizard's own return value is a UI action, not the ids).
         """
+        # A task that names payment terms ("Immediate Payment") wants them on the order and
+        # on every linked invoice; the term is set on the order first so the invoice
+        # inherits it, and written on the invoices as well in case it did not.
+        term_id = self.payment_term_id(payment_term) if payment_term else None
+        if term_id:
+            self.call("sale.order", "write", [[so_id], {"payment_term_id": term_id}])
         if method not in ("delivered", "percentage", "fixed"):
             raise OdooError(f"method must be delivered, percentage or fixed, not {method!r}",
                             "sale.advance.payment.inv", "invoice")
@@ -1164,6 +1342,8 @@ class Erp:
                 "create_invoices produced no invoice; check that the order is confirmed "
                 "and something has been delivered",
                 "sale.advance.payment.inv", "create_invoices")
+        if term_id and created:
+            self.call("account.move", "write", [created, {"invoice_payment_term_id": term_id}])
         return created
 
     def _so_invoice_ids(self, so_id: int) -> list[int]:

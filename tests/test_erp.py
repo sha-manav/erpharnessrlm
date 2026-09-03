@@ -37,6 +37,31 @@ def erp(dev_container_name):
     return Erp(db="bench", url=f"http://127.0.0.1:{port}", user="admin", password=key)
 
 
+def fresh_offer(erp, offers):
+    """The first offer with no confirmed order open on the devbox (a received order cannot
+    be cancelled, and the one-PO-per-offer guard refuses a second one)."""
+    for o in offers:
+        open_lines = erp.search_read(
+            "purchase.order.line",
+            [("partner_id", "=", o["vendor_id"]), ("product_id", "=", o["product_id"]),
+             ("order_id.state", "in", ("purchase", "done"))], ["id"], limit=1)
+        if not open_lines:
+            return o
+    pytest.skip("every candidate offer already has a confirmed order on the devbox")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def no_leftover_orders(erp):
+    """Cancel confirmed orders other modules or earlier runs left behind on the shared
+    devbox: the one-PO-per-offer guard would otherwise refuse this module's own orders."""
+    for po in erp.search_read("purchase.order", [("state", "in", ("purchase", "sent", "to approve"))], ["id"], limit=200):
+        erp.cancel("purchase.order", po["id"])
+    for so in erp.search_read("sale.order", [("state", "=", "sale")], ["id"], limit=200):
+        erp.cancel("sale.order", so["id"])
+    for mo in erp.search_read("mrp.production", [("state", "not in", ("done", "cancel"))], ["id"], limit=200):
+        erp.cancel("mrp.production", mo["id"])
+
+
 @pytest.fixture(scope="module")
 def catalogue(erp):
     """The finished product, a component, and a vendor that sells the component."""
@@ -274,7 +299,7 @@ def test_create_po_refuses_a_date_the_vendor_cannot_meet(erp):
     offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
     if not offers:
         pytest.skip("no vendor with a 3+ day lead time")
-    o = offers[0]
+    o = fresh_offer(erp, offers)
     with pytest.raises(OdooError) as excinfo:
         erp.create_po(o["vendor_id"], [(o["product_id"], max(o["min_qty"], 1))],
                       date_planned=erp.today())
@@ -300,6 +325,7 @@ def test_receive_refuses_goods_that_are_not_due(erp, catalogue):
     from datetime import datetime, timedelta
     later = (datetime.utcnow() + timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
     po_id = erp.create_po(catalogue["vendor_id"], [(catalogue["product_id"], max(catalogue["min_qty"], 1))],
+                          force=True,  # the offer may already have a received order; receive() is the subject
                           date_planned=later)
     erp.confirm_po(po_id)
     try:
@@ -422,7 +448,7 @@ def test_create_po_refuses_an_origin_it_cannot_feed(erp):
     offers = [o for o in erp.suppliers().all() if (o["delay_days"] or 0) >= 3]
     if not offers:
         pytest.skip("no vendor with a 3+ day lead time")
-    o = offers[0]
+    o = fresh_offer(erp, offers)
     partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
     partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
     today = erp.today()
@@ -533,3 +559,134 @@ def test_earliest_build_with_a_due_date_sources_the_cheapest_feasible_way(erp):
     split = [c for c in bought if "buy_lines" in c]
     assert split, "with a far due date every short component should get a cheapest split"
     assert all(c["buy_cost"] > 0 and c["buy"] >= c["needed"] - c["free_now"] - 1e-6 for c in split)
+
+
+def test_an_alternate_centre_is_priced_with_a_margin_and_says_so(erp):
+    """The alternate's true rate is not in the database (verified on a repair scenario:
+    a seeded work order there carries qty x the primary's minutes). The helpers assume
+    it is slower and label the assumption; filling an alternate at the primary's rate
+    failed the capacity rule."""
+    from lib.erp import ALT_RATE_MARGIN
+
+    centres = erp.search_read("mrp.workcenter", [("alternative_workcenter_ids", "!=", False)],
+                              ["alternative_workcenter_ids"], limit=1)
+    if not centres:
+        pytest.skip("this scenario has no alternate work centres")
+    ops = erp.search_read("mrp.routing.workcenter", [("workcenter_id", "=", centres[0]["id"])],
+                          ["bom_id", "time_cycle_manual"], limit=1)
+    if not ops:
+        pytest.skip("primary centre has no operation")
+    bom = erp.get("mrp.bom", [ops[0]["bom_id"][0]], ["product_tmpl_id"])[0]
+    pid = erp.search_read("product.product", [("product_tmpl_id", "=", bom["product_tmpl_id"][0])],
+                          ["id"], limit=1)[0]["id"]
+    rows = erp.workcenter_options(pid).all()
+    primary = [r for r in rows if r["role"] == "primary"][0]
+    alts = [r for r in rows if r["role"] == "alternative"]
+    assert alts and primary["rate"] == "stated"
+    for a in alts:
+        assert a["rate"].startswith("assumed") and abs(a["min_per_unit"] - primary["min_per_unit"] * ALT_RATE_MARGIN) < 1e-6
+        if a["minutes_limit"] and primary["minutes_limit"]:
+            pass
+    # Committed minutes on an alternate use the same margin.
+    table = {r["id"]: r for r in erp.workcenters().all()}
+    for a in alts:
+        wos = erp.search_read("mrp.workorder", [("workcenter_id", "=", a["workcenter_id"]), ("state", "!=", "cancel")],
+                              ["production_id"], limit=50)
+        if wos:
+            qty = sum(erp.get("mrp.production", [w["production_id"][0]], ["product_qty", "state"])[0]["product_qty"]
+                      for w in wos if erp.get("mrp.production", [w["production_id"][0]], ["state"])[0]["state"] != "cancel")
+            assert abs(table[a["workcenter_id"]]["minutes_committed"] - qty * a["min_per_unit"]) < 1.0
+
+
+def test_create_po_refuses_a_second_po_for_an_open_offer_and_add_po_lines_extends_it(erp, catalogue):
+    from lib.erp import OdooError
+
+    product_id, qty = catalogue["product_id"], max(catalogue["min_qty"], 1)
+    # An earlier test in this module receives goods on this offer, and a received order
+    # cannot be cancelled: pick a vendor/product pair with no confirmed order open.
+    for line in erp.search_read("purchase.order.line",
+                                [("partner_id", "=", catalogue["vendor_id"]), ("product_id", "=", product_id),
+                                 ("order_id.state", "in", ("purchase", "done"))], ["order_id"], limit=20):
+        try:
+            erp.cancel("purchase.order", line["order_id"][0])
+        except Exception:      # noqa: BLE001
+            pytest.skip("this offer already has a received (uncancellable) order on the devbox")
+    po = erp.create_po(catalogue["vendor_id"], [(product_id, qty)], date_planned="2026-12-01 08:00:00")
+    erp.confirm_po(po)
+    try:
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(catalogue["vendor_id"], [(product_id, qty)], date_planned="2026-12-01 08:00:00")
+        assert "one PO per supplier offer" in str(excinfo.value) and f"add_po_lines({po}" in str(excinfo.value)
+        before = len(erp.search_read("purchase.order.line", [("order_id", "=", po)], ["id"], limit=50))
+        erp.add_po_lines(po, [(product_id, qty)])
+        after = erp.search_read("purchase.order.line", [("order_id", "=", po)], ["id", "price_unit"], limit=50)
+        assert len(after) == before + 1 and all(l["price_unit"] > 0 for l in after)
+        state = erp.get("purchase.order", [po], ["state"])[0]["state"]
+        assert state == "purchase"
+    finally:
+        erp.cancel("purchase.order", po)
+
+
+def test_invoice_with_a_named_payment_term_sets_it_on_order_and_invoice(erp, catalogue):
+    """A task naming payment terms wants them on the retained order and every linked invoice."""
+    from lib.erp import OdooError
+
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=1)
+    partner_id = (partner or erp.search_read("res.partner", [], ["name"], limit=1))[0]["id"]
+    so = erp.call("sale.order", "create", [{
+        "partner_id": partner_id, "commitment_date": "2026-12-01 08:00:00",
+        "order_line": [(0, 0, {"product_id": catalogue["product_id"], "product_uom_qty": 1})]}])
+    erp.call("sale.order", "action_confirm", [[so]])
+    try:
+        term = erp.payment_term_id("Immediate")
+        try:
+            invs = erp.invoice(so, payment_term="Immediate", method="fixed", amount=1.0)
+        except OdooError as exc:
+            pytest.skip(f"down payment not possible here: {exc}")
+        row = erp.get("sale.order", [so], ["payment_term_id"])[0]
+        assert row["payment_term_id"] and row["payment_term_id"][0] == term
+        for m in erp.get("account.move", invs, ["invoice_payment_term_id"]):
+            assert m["invoice_payment_term_id"] and m["invoice_payment_term_id"][0] == term
+        with pytest.raises(OdooError):
+            erp.payment_term_id("no such term zz")
+    finally:
+        erp.cancel("sale.order", so)
+
+
+def test_create_po_refuses_a_quantity_the_named_orders_cannot_absorb(erp):
+    """Origin quantities are a flow: name only what consumes the supply, unit for unit."""
+    from lib.erp import OdooError
+
+    comp = offers = pid = None
+    for bom in erp.search_read("mrp.bom", [("bom_line_ids", "!=", False)], ["product_tmpl_id"], limit=20):
+        pid = erp.search_read("product.product", [("product_tmpl_id", "=", bom["product_tmpl_id"][0])],
+                              ["id"], limit=1)[0]["id"]
+        for c in erp.earliest_build(pid, 2)["components"]:
+            offers = erp.suppliers([c["component_id"]]).all()
+            if offers:
+                comp = c
+                break
+        if comp:
+            break
+    if comp is None:
+        pytest.skip("no BOM with a purchasable component")
+    o = offers[0]
+    mo = erp.create_mo(pid, 2, date_start="2026-11-20 08:00:00", force=True)
+    erp.confirm_mo(mo)
+    mo_name = erp.get("mrp.production", [mo], ["name"])[0]["name"]
+    try:
+        big = max(o["min_qty"] or 0, comp["needed"] + 50) + 1     # above need and not the MOQ
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], [(comp["component_id"], big)], date_planned="2026-11-15 08:00:00",
+                          origin=mo_name)
+        assert "absorb" in str(excinfo.value)
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], [(comp["component_id"], 1)], date_planned="2026-11-15 08:00:00",
+                          origin="S99999", force=False)
+        assert "origin" in str(excinfo.value)
+        ok = max(o["min_qty"] or 0, comp["needed"])
+        po = erp.create_po(o["vendor_id"], [(comp["component_id"], ok)], date_planned="2026-11-15 08:00:00",
+                           origin=mo_name)
+        erp.cancel("purchase.order", po)
+    finally:
+        erp.cancel("mrp.production", mo)

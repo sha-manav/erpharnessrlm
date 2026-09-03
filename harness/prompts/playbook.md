@@ -21,6 +21,10 @@ po = erp.create_po(vendor_id, [(product_id, qty)],
 erp.confirm_po(po)                                       # leave it confirmed; no receive()
 ```
 
+**One purchase order per supplier offer.** A second need from a vendor who already has
+an open order for that product goes onto that order — `erp.add_po_lines(po_id, [(product_id,
+qty)])` works on a confirmed PO — never onto a second PO; `create_po` refuses one.
+
 `origin` is the audit trail — *this purchase is for that order*. Name **only** the orders
 this purchase feeds: exact references (`S00004`, or `S00003, S00004`), and only those
 whose due date the arrival meets. An order due before the goods land is not fed by this
@@ -57,7 +61,11 @@ po = erp.create_po(vendor_id, [(component_id, need)],        # components first
 ```
 
 When one centre's minutes cannot hold the whole quantity, split it: two MOs on two
-centres (`units_fit` says how many each takes), or make part and buy the rest.
+centres (`units_fit` says how many each takes), or make part and buy the rest. An
+**alternate** centre has no stated rate for the product — Odoo shows the primary's
+minutes there, and that number is not the truth. The helpers assume an alternate is
+slower (`rate` column says so); use their `units_fit`, never the primary's rate, and
+leave that headroom rather than filling an alternate to its limit.
 `erp.produce` exists for goods needed today: it reserves, sets `qty_producing`,
 **writes the component consumption explicitly** and marks done — without that Odoo
 finishes the order having consumed nothing.
@@ -65,7 +73,12 @@ finishes the order having consumed nothing.
 **Sales.** Confirm, and set `commitment_date`. Deliver **only what is on hand now** —
 a delivery draws from stock, and stock that is still on a purchase order is not on hand.
 Invoice what you delivered and post it; an order delivered but not invoiced, or invoiced
-but left in draft, is unfinished work. Orders waiting on incoming goods stay confirmed
+but left in draft, is unfinished work. **When the task states an invoicing policy** —
+"after confirming each retained order, create and post exactly one linked invoice", a
+down payment, named payment terms — that policy applies to **every** retained order,
+delivered or not: `erp.invoice(so_id, payment_term="Immediate Payment")` (the wizard
+invoices ordered quantities under an order-based invoice policy). Write the policy into
+`plan.set` as a rule; the soft `so_invoiced` check lists what is still uninvoiced. Orders waiting on incoming goods stay confirmed
 with their delivery pending.
 
 ```python
@@ -103,9 +116,11 @@ erp.earliest_build(product_id, qty, need_by=due) # with a due date: components s
                                                   # the fastest
 ```
 
-Buy exactly the shortfall (`needed - free_now`), split the way `cheapest_buy` says: a plan
-that met every constraint still lost on spend alone for buying 66 + 7 where 63 + 10 was
-cheaper, and 74 where 73 was needed.
+Buy exactly the shortfall (`needed - free_now`), split the way `cheapest_buy` says —
+**every purchase line comes from `cheapest_buy`, never from picking rows off the
+`feasible_vendors` table by hand**: two plans that met every constraint lost on spend
+alone (66 + 7 where 63 + 10 was cheaper; 0.35% over on a hand-picked split). Pass the
+MO's start as `need_by` for components (`earliest_build(..., need_by=)` does this).
 
 An empty `feasible_vendors` table means no listed vendor can make the date — cover the
 demand from stock or manufacturing, or say so in the summary. Never invent a
