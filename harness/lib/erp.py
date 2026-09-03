@@ -870,7 +870,10 @@ class Erp:
                     # The tier that applies to this quantity (largest min_qty not above it).
                     tiers = [(o["min_qty"] or 0) for o in offers if (o["min_qty"] or 0) <= line[1] + 0.01]
                     moq = max(tiers) if tiers else None
-                    self._refuse_excess_over_origin(line[0], line[1], origin, moq, "this purchase")
+                    line_date = line[3] if len(line) > 3 and line[3] else date_planned
+                    delay = self._delay_for(vendor_id, line[0])
+                    arrives = max(filter(None, [line_date or "", _add_days(self.today(), delay) if delay is not None else ""]), default="")
+                    self._refuse_excess_over_origin(line[0], line[1], origin, moq, "this purchase", arrives)
             self._check_one_po_per_offer(vendor_id, lines)
         commands = []
         for line in lines:
@@ -992,7 +995,7 @@ class Erp:
         return need
 
     def _refuse_excess_over_origin(self, product_id: int, qty: float, origin: str,
-                                   min_qty: float | None, what: str) -> None:
+                                   min_qty: float | None, what: str, arrives: str = "") -> None:
         """Refuse a quantity the named orders cannot absorb (excess allowed only when the
         quantity is exactly the vendor's minimum). The flow rule the grader of any plan
         applies: supply traces to the demand it names, unit for unit."""
@@ -1002,7 +1005,10 @@ class Erp:
         need = self.origin_capacity(product_id, tokens)
         none = [t for t in tokens if need.get(t, 0.0) < 1 - 1e-6]
         capacity = sum(need.values())
-        at_minimum = min_qty is not None and abs(qty - min_qty) <= 0.01
+        # The minimum-quantity allowance is for component purchases (origin names MOs). A
+        # finished-goods purchase must be absorbed entirely by the sales orders it names.
+        names_mos = bool(self.search_read("mrp.production", [("name", "in", tokens)], ["id"], limit=1))
+        at_minimum = names_mos and min_qty is not None and abs(qty - min_qty) <= 0.01
         if none:
             raise OdooError(
                 f"origin refused: {', '.join(none)} need none of product {product_id}; {what} names "
@@ -1010,11 +1016,28 @@ class Erp:
                 "origin", "quantity")
         if capacity + 1e-6 < qty and not at_minimum:
             detail = ", ".join(f"{t} needs {need[t]:g}" for t in tokens[:6])
+            hint = ""
+            if not names_mos:
+                # Which other sales orders for this product could absorb the excess: due on
+                # or after arrival, not already named (delivered-from-stock orders count).
+                domain = [("product_id", "=", product_id), ("order_id.state", "in", ("sale", "done")),
+                          ("order_id.name", "not in", tokens)]
+                if arrives:
+                    domain.append(("order_id.commitment_date", ">=", arrives))
+                others = self.search_read("sale.order.line", domain,
+                                          ["order_id", "product_uom_qty"], limit=20)
+                cands = sorted({(l["order_id"][1], l["product_uom_qty"] or 0) for l in others if l["order_id"]})
+                if cands:
+                    hint = (" Orders due on or after arrival that could absorb the extra "
+                            f"{qty - capacity:g}: " + ", ".join(f"{n} ({q:g})" for n, q in cands[:6]) +
+                            f" — e.g. origin={', '.join(tokens + [cands[0][0]])!r}.")
+                else:
+                    hint = " No other order for this product is due on or after arrival: buy only what the named orders need."
             raise OdooError(
                 f"origin refused: {what} supplies {qty:g} but the orders it names absorb {capacity:g} "
-                f"({detail}). Supply what they need, or name every order this quantity is for; a "
-                "quantity forced up to the vendor's minimum is the one allowed excess. force=True "
-                "writes it anyway, and the finish check will refuse it.",
+                f"({detail}). A finished-goods purchase must be absorbed entirely by the sales orders "
+                "it names; only a component purchase at the vendor's minimum may exceed the MOs it "
+                f"names.{hint} force=True writes it anyway, and the finish check will refuse it.",
                 "origin", "quantity")
 
     def _refuse_bad_origin(self, arrives: str, origin: str, what: str) -> None:

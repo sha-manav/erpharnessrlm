@@ -670,7 +670,7 @@ def test_create_po_refuses_a_quantity_the_named_orders_cannot_absorb(erp):
             break
     if comp is None:
         pytest.skip("no BOM with a purchasable component")
-    o = offers[0]
+    o = fresh_offer(erp, offers)          # an offer with no confirmed order open on the devbox
     mo = erp.create_mo(pid, 2, date_start="2026-11-20 08:00:00", force=True)
     erp.confirm_mo(mo)
     mo_name = erp.get("mrp.production", [mo], ["name"])[0]["name"]
@@ -690,3 +690,33 @@ def test_create_po_refuses_a_quantity_the_named_orders_cannot_absorb(erp):
         erp.cancel("purchase.order", po)
     finally:
         erp.cancel("mrp.production", mo)
+
+
+def test_create_po_refuses_finished_goods_excess_and_names_an_absorber(erp, catalogue):
+    from lib.erp import OdooError, _add_days
+
+    product_id = catalogue["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=2)
+    if len(partner) < 2:
+        partner = erp.search_read("res.partner", [], ["name"], limit=2)
+    today = erp.today()
+    delay = erp._delay_for(catalogue["vendor_id"], product_id) or 0
+    arrival = _add_days(today, max(delay, 1))
+    sos = []
+    for p in partner[:2]:
+        so = erp.call("sale.order", "create", [{
+            "partner_id": p["id"], "commitment_date": _add_days(arrival, 5),
+            "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 6})]}])
+        erp.call("sale.order", "action_confirm", [[so]])
+        sos.append((so, erp.get("sale.order", [so], ["name"])[0]["name"]))
+    lines = [(product_id, max(catalogue["min_qty"], 8))]
+    try:
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(catalogue["vendor_id"], lines, date_planned=arrival, origin=sos[0][1])
+        msg = str(excinfo.value)
+        assert "absorbed entirely" in msg and sos[1][1] in msg
+        po = erp.create_po(catalogue["vendor_id"], lines, date_planned=arrival, origin=f"{sos[0][1]}, {sos[1][1]}")
+        erp.cancel("purchase.order", po)
+    finally:
+        for so, _ in sos:
+            erp.cancel("sale.order", so)

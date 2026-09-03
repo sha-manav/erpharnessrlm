@@ -25,6 +25,12 @@ erp.confirm_po(po)                                       # leave it confirmed; n
 an open order for that product goes onto that order — `erp.add_po_lines(po_id, [(product_id,
 qty)])` works on a confirmed PO — never onto a second PO; `create_po` refuses one.
 
+**A finished-goods purchase must be absorbed entirely by the sales orders it names.** When
+the vendor's minimum exceeds the shortfall (8 for an order needing 6), name additional
+orders due on or after the arrival date to absorb the extra units — orders you deliver
+from stock still count — and never leave units that no named order can take. Only a
+component purchase at the vendor's minimum may exceed the MOs it names.
+
 `origin` is the audit trail — *this purchase is for that order*. Name **only** the orders
 this purchase feeds: exact references (`S00004`, or `S00003, S00004`), and only those
 whose due date the arrival meets. An order due before the goods land is not fed by this

@@ -754,3 +754,38 @@ def test_a_component_po_matching_the_mo_need_passes(erp, made):
     finally:
         erp.cancel("purchase.order", po)
         erp.cancel("mrp.production", mo)
+
+
+def test_a_finished_goods_po_larger_than_the_orders_it_names_is_detected(erp, offer):
+    """No MOQ allowance for finished goods: 8 at a minimum of 8 naming a 6-unit order fails
+    the grader; naming a second order due on or after arrival passes (verified on a dev
+    grader replay)."""
+    from lib import check
+    from lib.erp import _add_days
+
+    product_id = offer["product_id"]
+    partner = erp.search_read("res.partner", [("customer_rank", ">", 0)], ["name"], limit=2)
+    if len(partner) < 2:
+        partner = erp.search_read("res.partner", [], ["name"], limit=2)
+    today = erp.today()
+    arrival = _add_days(today, max(offer["delay_days"] or 0, 1))
+    sos = []
+    for p in partner[:2]:
+        so = erp.call("sale.order", "create", [{
+            "partner_id": p["id"], "commitment_date": _add_days(arrival, 5),
+            "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 6})]}])
+        erp.call("sale.order", "action_confirm", [[so]])
+        sos.append((so, erp.get("sale.order", [so], ["name"])[0]["name"]))
+    qty = max(offer["min_qty"] or 0, 8)
+    po = erp.create_po(offer["vendor_id"], [(product_id, qty)], date_planned=arrival,
+                       origin=sos[0][1], force=True)
+    erp.confirm_po(po)
+    try:
+        assert status_of(check.invariants(erp), "origin_flow") == "FAIL"
+        erp.call("purchase.order", "write", [[po], {"origin": f"{sos[0][1]}, {sos[1][1]}"}])
+        table = check.invariants(erp)
+        assert status_of(table, "origin_flow") == "pass", evidence_of(table, "origin_flow")
+    finally:
+        erp.cancel("purchase.order", po)
+        for so, _ in sos:
+            erp.cancel("sale.order", so)

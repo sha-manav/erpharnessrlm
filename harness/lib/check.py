@@ -724,10 +724,19 @@ def _origin_flow(client) -> tuple[bool, str]:
         # flows. A quantity forced up to the vendor's minimum only has to place what the
         # named orders need.
         flow_rows = []
+        mo_names = {mo["name"] for mo in mo_rows}
         for name, qty, tokens, moq in rows:
             capacity = sum(demand.get(t, 0.0) for t in tokens)
             must_place = qty
-            if capacity + 1e-6 < qty and moq is not None and abs(qty - moq) <= 0.01:
+            # The minimum-quantity allowance exists for component purchases (tokens are
+            # MOs). A finished-goods purchase must be absorbed entirely by the sales
+            # orders it names: when the vendor's minimum exceeds the shortfall, name more
+            # orders due on or after arrival. Verified on a dev grader: 8 units at a
+            # minimum of 8 naming one 6-unit order fails; naming a second order passes.
+            # NB: this module defines its own `all(client)` (the check.all() API), so the
+            # builtin must not be used by name here.
+            component_supply = bool(tokens) and set(tokens) <= mo_names
+            if component_supply and capacity + 1e-6 < qty and moq is not None and abs(qty - moq) <= 0.01:
                 must_place = capacity
             flow_rows.append((name, must_place, tokens, qty, capacity))
         absorbed = _max_flow([(n, m, t) for n, m, t, _, _ in flow_rows], demand)
@@ -747,8 +756,11 @@ def _origin_flow(client) -> tuple[bool, str]:
         return False, (
             f"{len(problems)} order(s) whose quantity does not trace to the demand they name: {shown}{more}. "
             "Buy or make what the named orders need (erp.earliest_build / erp.cheapest_buy give the "
-            "exact shortfall) and name every order the quantity is for; a purchase forced up to the "
-            "vendor's minimum is the one allowed excess.")
+            "exact shortfall) and name every order the quantity is for. A finished-goods purchase "
+            "must be absorbed entirely by the sales orders it names — when the vendor's minimum "
+            "exceeds the shortfall, add orders due on or after its arrival (orders delivered from "
+            "stock still count). Only a component purchase at the vendor's minimum may exceed the "
+            "MOs it names.")
     return True, f"every purchase and manufacturing quantity traces to the demand it names ({sum(len(r) for r in supplies.values())})"
 
 

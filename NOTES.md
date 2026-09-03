@@ -1095,6 +1095,24 @@ eval100: `runs/C_full__big__eval100__20260903T030749Z`, N=8, commit f599ec7+smok
 launched with --allow-low-credit ($86.57 vs $89 preflight; measured cost $0.66/task).
 Baidu serves nearly every request; resets recover by the third attempt at this load.
 
+### eval100 mid-run library fix (2026-09-03 03:58 UTC) — finished-goods purchases must be fully absorbed
+
+Replaying the smoke's 2014 end state on a dev devbox against its grader: the MOQ-excess
+clause of `po_origin_traceability` applies **only to component purchases**. A
+finished-goods PO must be absorbed entirely by the sales orders it names — 8 units at a
+minimum of 8 naming one 6-unit order fails; naming a second order due on or after
+arrival (delivered-from-stock orders count) passes. `origin_flow` and the `create_po`
+guard now mirror this (the guard lists the orders that could absorb the excess). The
+first version of the fix silently passed because `check.py` defines `all(client)` and
+the builtin `all` was shadowed — a Table is truthy; caught by a debug print, not a test.
+
+eval100 (`C_full__big__eval100__20260903T030749Z`) was already running: trials load the library at kernel
+start, so trials started after this commit run the corrected `origin_flow`/guard and
+earlier ones do not. 19 trial directories existed at the time of the change
+(the first 16 in dev40 order); the run's meta.json records the launch commit and this
+note records the boundary. 2021 (97.5, `po_origin_traceability` only) is the observed
+cost of the old rule on eval so far.
+
 ## Freeze
 
 *(P3.7)*
