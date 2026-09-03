@@ -1131,6 +1131,15 @@ task's hour, so it is a ceiling, not a target) and the batch runs at N=12:
 `runs/C_full__big__eval100__20260903T042100Z`. Practical concurrency ceiling on this
 machine is therefore set by seeding CPU, not by RAM or the provider.
 
+Batch 2 at N=12 seeded in 3 min and scored 8 (7 valid: 2063, 2077, 2091, 2121 pass; 2225
+98.2, 2102, 2184 fail) before the laptop moved buildings: DNS failures on every request,
+one trial gave up after 8 attempts (2087, api_error, excluded), eleven in flight were
+lost when the run was stopped so that no further trial would be started offline. Batch 3
+(`runs/C_full__big__eval100__20260903T050126Z`, 79 tasks, N=12) started when the network
+returned; 21 valid results stand from batches 1–2. Merge rule at ingest: first result per
+task id whose terminal reason is neither api_error nor crash.
+
+
 ## Freeze
 
 *(P3.7)*
