@@ -8,12 +8,15 @@ coding-agent harness the Anchor paper used, on the frozen 100-task subset
 |---|---|---|---:|---:|---:|---:|---:|---:|
 | A_pi | z-ai/glm-5.1 | 100 | 39.0 | 35.8 | +3.2 | 54.7 | 27.7 | 0.624 |
 | A_pi | qwen/qwen3-32b | 67 | 0.0 | — | — | 1.2 | 15.0 | 0.007 |
+| C_full | z-ai/glm-5.1 | 100 | 72.0 | 35.8 | +36.2 | 88.9 | 33.5 | 0.829 |
 
 ## Verdict
 
 - **A_pi / z-ai/glm-5.1**: 39.0 against 35.8 published, a gap of 3.2 points — within the ±8-point tolerance.
 - 4 of those A_pi/z-ai/glm-5.1 trials were **interrupted** (terminal reason timeout/crash) when a run was stopped by hand rather than by the agent's own failure: `2067_medium_08_single_bom_single_workcenter`, `2074_medium_08_single_bom_single_workcenter`, `2149_hard_15_parallel_subassemblies_branch_assigned`, `2174_medium_18_manufacture_only_policy_forbidden`. Their verifier still scored whatever state existed at the kill, which biases the figure down. Excluding them: **40.6** over 96 trials. Re-running those tasks cleanly would remove the caveat.
 - 1 of those A_pi/qwen/qwen3-32b trials were **interrupted** (terminal reason timeout/crash) when a run was stopped by hand rather than by the agent's own failure: `2091_medium_10_single_bom_split_by_capacity`. Their verifier still scored whatever state existed at the kill, which biases the figure down. Excluding them: **0.0** over 66 trials. Re-running those tasks cleanly would remove the caveat.
+- **C_full / z-ai/glm-5.1**: 72.0 against 35.8 published, a gap of 36.2 points — OUTSIDE the ±8-point tolerance.
+- 2 of those C_full/z-ai/glm-5.1 trials were **interrupted** (terminal reason timeout/crash) when a run was stopped by hand rather than by the agent's own failure: `2282_medium_repair_plan_medium`, `2229_hard_23_restricted_subassembly_qualified_workcenters_screened_all_seeded`. Their verifier still scored whatever state existed at the kill, which biases the figure down. Excluding them: **73.5** over 98 trials. Re-running those tasks cleanly would remove the caveat.
 
 ## What differs from the published setup
 

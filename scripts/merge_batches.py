@@ -48,7 +48,9 @@ def summarise(merged: dict[str, dict], total: int) -> dict:
     rows = list(merged.values())
     n = len(rows)
     if not n:
-        return {"n": 0}
+        return {"n": 0, "of": total, "passes": 0, "pass_rate": 0.0, "mean_reward": 0.0, "mean_steps": 0.0,
+                "input_tokens_per_task": 0.0, "cache_pct": 0.0, "output_tokens_per_task": 0.0,
+                "cost_per_task": 0.0, "terminal": {}}
     tin = sum(r["tokens"]["input"] for r in rows)
     cached = sum(r["tokens"]["cached"] for r in rows)
     terms: dict[str, int] = {}
