@@ -1,0 +1,5 @@
+# smoke4: one task per fixed family (invoicing policy, consolidation, MO path, buy-only). Dev only.
+2014_easy_02_buy_only_immediate_invoicing
+2279_easy_repair_plan_easy
+2065_medium_08_single_bom_single_workcenter
+2004_easy_01_buy_only_baseline
