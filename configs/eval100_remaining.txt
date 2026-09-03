@@ -1,21 +1,7 @@
-# eval100 minus tasks with a valid result in batches 1-3 (final batch after the credit top-up)
-# 19 task ids — do not edit by hand.
-2012_easy_02_buy_only_immediate_invoicing
-2019_easy_03_buy_only_fixed_downpayment
-2025_easy_04_buy_only_percentage_downpayment
-2027_easy_04_buy_only_percentage_downpayment
-2067_medium_08_single_bom_single_workcenter
+# eval100: the five tasks whose only results died to the second network drop (batch 5)
+# 5 task ids — do not edit by hand.
 2098_hard_11_restricted_subassembly_qualified_workcenters
-2105_hard_11_restricted_subassembly_qualified_workcenters
-2124_medium_13_single_subassembly_qualified_workcenters
-2141_hard_15_parallel_subassemblies_branch_assigned
 2155_hard_16_serial_subassemblies_branch_assigned
 2158_hard_16_serial_subassemblies_branch_assigned
-2177_medium_18_manufacture_only_policy_forbidden
-2198_medium_20_manufacture_only_no_available_vendors
 2229_hard_23_restricted_subassembly_qualified_workcenters_screened_all_seeded
-2248_hard_24_single_subassembly_shared_overflow_capacity_screened_invoicing
-2274_easy_repair_plan_easy
-2288_medium_repair_plan_medium
-2293_hard_repair_plan_hard
 2297_hard_repair_plan_hard
