@@ -1123,6 +1123,14 @@ caught before any trial ran); the second died in 82 s because Docker's default a
 pools were exhausted by networks the force-killed runs left behind (32 networks;
 `docker network prune -f` → 4). The launcher now prunes unused networks in preflight.
 
+Third false start (still no money spent): at N=16 all sixteen trials crashed with
+"/tmp/saas_setup_complete did not appear within 600s" — sixteen simultaneous Odoo +
+Postgres seedings saturate the 18 cores (each container asks for 3), and the agent's
+wait for the scenario marker was 600 s. The wait is now 1500 s (it counts against the
+task's hour, so it is a ceiling, not a target) and the batch runs at N=12:
+`runs/C_full__big__eval100__20260903T042100Z`. Practical concurrency ceiling on this
+machine is therefore set by seeding CPU, not by RAM or the provider.
+
 ## Freeze
 
 *(P3.7)*
