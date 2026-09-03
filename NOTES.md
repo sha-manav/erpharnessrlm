@@ -1139,6 +1139,16 @@ lost when the run was stopped so that no further trial would be started offline.
 returned; 21 valid results stand from batches 1–2. Merge rule at ingest: first result per
 task id whose terminal reason is neither api_error nor crash.
 
+Batch 3 ran 60 tasks at N=12 in ~2 h 20 min without a crash or timeout and then hit the
+credit floor: OpenRouter's per-request holds against a $3 balance turned into in-flight
+402s, then terminal ones; seven trials died as api_error (one of them, 2198, after
+scoring 100 — excluded anyway, conservatively) and the run was stopped. Standing after
+batches 1–3: **81 valid results, 62 passes (76.5%), mean reward 92.7**, 2 token-cap
+hits, 0 timeouts; 19 tasks remain (`configs/eval100_remaining.txt`) for a final batch
+once credit is added. The $0.66/task estimate from dev40 under-shot eval: measured
+spend over the three batches is about $0.80/task (longer hard tasks, 12-way holds).
+
+
 
 ## Freeze
 
