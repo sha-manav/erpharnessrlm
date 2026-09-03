@@ -125,6 +125,25 @@ def preflight_model(model: dict, api_key: str) -> dict:
     return {"reachable": True, "provider": provider}
 
 
+def preflight_docker_networks(concurrency: int) -> None:
+    """Prune unused compose networks before launching.
+
+    Each Harbor trial creates a compose network; a force-killed run leaves its networks
+    behind (`docker rm -f` removes containers, not networks). Docker's default address
+    pools hold about thirty of them, and a launch at N=16 died in 82 s with every trial
+    reporting "all predefined address pools have been fully subnetted". Pruning removes
+    only networks no container uses.
+    """
+    import subprocess
+
+    before = subprocess.run(["docker", "network", "ls", "-q"], capture_output=True, text=True).stdout.split()
+    subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, text=True)
+    after = subprocess.run(["docker", "network", "ls", "-q"], capture_output=True, text=True).stdout.split()
+    print(f"docker networks: {len(before)} -> {len(after)} after prune ({concurrency} needed for this run)")
+    if len(after) + concurrency > 30:
+        print("warning: the default Docker address pools may not hold this many concurrent trials")
+
+
 def preflight_credit(model: dict, api_key: str, n_tasks: int, allow_low: bool,
                      n_concurrent: int = 1) -> dict:
     """Refuse to start a run the account cannot pay for.
@@ -282,6 +301,7 @@ def main() -> int:
             "Only dev40 needs the big model."
         )
     reachability = preflight_model(model, api_key)
+    preflight_docker_networks(args.n_concurrent)
     credit = preflight_credit(model, api_key, len(task_ids), args.allow_low_credit,
                               args.n_concurrent)
 

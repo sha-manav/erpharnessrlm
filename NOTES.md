@@ -1113,6 +1113,16 @@ earlier ones do not. 19 trial directories existed at the time of the change
 note records the boundary. 2021 (97.5, `po_origin_traceability` only) is the observed
 cost of the old rule on eval so far.
 
+### eval100 batch 2 (2026-09-03): restart at N=16, and two launch failures
+
+The N=8 run was stopped at 14 scored (8 in-flight trials lost, ~$4) to run the remaining
+86 at N=16 (`configs/eval100_remaining.txt`, `--alias eval100`; batches merge by task id
+at ingest). Two false starts, no money spent on either: the first remaining set matched
+scored tasks by full id against Harbor's truncated directory names (12 duplicates —
+caught before any trial ran); the second died in 82 s because Docker's default address
+pools were exhausted by networks the force-killed runs left behind (32 networks;
+`docker network prune -f` → 4). The launcher now prunes unused networks in preflight.
+
 ## Freeze
 
 *(P3.7)*
