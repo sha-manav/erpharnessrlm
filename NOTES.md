@@ -1150,6 +1150,36 @@ spend over the three batches is about $0.80/task (longer hard tasks, 12-way hold
 
 
 
+## eval100 result (2026-09-03) — C_full 72% vs pi 39%
+
+Five batches merged by `scripts/merge_batches.py` (first completed result per task;
+api_error/crash excluded): `analysis/eval100_C_full.json`, `analysis/eval100_A_pi.json`.
+
+| eval100 | A_pi (stock) | C_full v1 |
+|---|---|---|
+| pass@1 | 39/100 (39.0%) | **72/100 (72.0%)** |
+| mean reward | 54.7 | **88.9** |
+| steps | 27.7 | 33.5 |
+| input tokens/task | 978k (cache 75%) | 1,197k (cache 86%) |
+| output tokens/task | 37k | 96k |
+| $/task | 0.624 | 0.829 |
+| terminal | finish 96, timeout 4 | finish 93, token_cap 5, timeout 2 |
+
+Paired on all 100: C wins 37 tasks pi lost, loses 4 pi won, both pass 35, both fail 24.
+By difficulty — easy 17/18 vs 12/18 (reward 99.8 vs 75.6), medium 45/57 vs 22/57 (92.0 vs
+57.5), hard 10/25 vs 5/25 (74.0 vs 33.3).
+
+C's 28 failures: 12 optimality-only (every rule green, spend or objective off the
+reference; 9 of them scored ≥ 90), 5 token-cap hits, 4 origin traceability, 3 capacity,
+2 timing, 2 timeouts. Cost is 33% above pi per task: reasoning output is 2.6× pi's, the
+cache absorbs the larger input.
+
+Provenance caveats, all recorded above: the library was patched once mid-run (the
+finished-goods origin rule, after 19 trials had started); the run was split into five
+batches by a concurrency restart, two network drops and a credit floor; five trials
+were rerun after dying to the second network drop (one of them, 2297, had scored 99.9
+on the killed attempt and 20.4 on the rerun — the rerun stands).
+
 ## Freeze
 
 *(P3.7)*

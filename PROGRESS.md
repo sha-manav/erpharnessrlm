@@ -36,7 +36,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P3.7 Freeze checklist       | todo   |            |
 
 ## Phase 4 — Eval runs
-- P4 all configs on eval100   | todo   |            |
+- P4 all configs on eval100   | part   | 2026-09-03 | A_pi 39/100 (54.7, $0.62); C_full v1 72/100 (88.9, $0.83, 86% cache, 5 token-cap, 2 timeouts); paired: C +37/−4. B_bash and C_minus_* ablations not run on eval (credit); their dev40 numbers are in NOTES
 
 ## Phase 5 — Analysis and write-up
 - P5.1 stats.py               | todo   |            |
