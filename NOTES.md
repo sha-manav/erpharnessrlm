@@ -1083,6 +1083,18 @@ candidate for the next pass, not a fix I can verify offline.
 
 All of the fixes above are merged into main (2ac500a); none were in the run's code.
 
+## eval100 launch (2026-09-03) — smoke4 on the merged code, then N=8
+
+smoke4 (2004, 2014, 2065, 2279; one task per fixed family): 3/4 at 100. 2279 (one PO per
+offer) and 2065 pass; 2014 clears the invoicing-policy rules it lost on dev40 and scores
+97.5 on `po_origin_traceability finished` alone: one PO of 8 (the vendor's minimum) for
+an order needing 6, origin naming that order — the grader's MOQ-excess clause should
+accept it and `origin_flow` does; unresolved, parked. No library errors in first steps.
+
+eval100: `runs/C_full__big__eval100__20260903T030749Z`, N=8, commit f599ec7+smoke4,
+launched with --allow-low-credit ($86.57 vs $89 preflight; measured cost $0.66/task).
+Baidu serves nearly every request; resets recover by the third attempt at this load.
+
 ## Freeze
 
 *(P3.7)*
