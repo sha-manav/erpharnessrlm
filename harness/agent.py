@@ -57,7 +57,7 @@ CONTAINER_ENV = {
 }
 
 SETUP_MARKER = "/tmp/saas_setup_complete"
-SETUP_TIMEOUT_S = 600
+SETUP_TIMEOUT_S = 1500   # sixteen simultaneous Odoo seedings took >600 s on 18 cores; the wait counts against the task hour
 
 
 class ErpAgent(BaseAgent):
