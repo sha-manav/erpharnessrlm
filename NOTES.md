@@ -1109,7 +1109,7 @@ the builtin `all` was shadowed — a Table is truthy; caught by a debug print, n
 eval100 (`C_full__big__eval100__20260903T030749Z`) was already running: trials load the library at kernel
 start, so trials started after this commit run the corrected `origin_flow`/guard and
 earlier ones do not. 19 trial directories existed at the time of the change
-(the first 16 in dev40 order); the run's meta.json records the launch commit and this
+(in eval100 order); the run's meta.json records the launch commit and this
 note records the boundary. 2021 (97.5, `po_origin_traceability` only) is the observed
 cost of the old rule on eval so far.
 
