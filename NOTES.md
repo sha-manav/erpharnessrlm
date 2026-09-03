@@ -1045,6 +1045,44 @@ naming what each needs; `erp.origin_capacity(product_id, tokens)` exposes the nu
 Also on the branch since the last note: `feasible_vendors` points at `cheapest_buy`
 (2259 lost 0.35% on a hand-picked split; 2070 90.7 on the same).
 
+## dev40 result, harness v1 (2026-09-02/03) — C_full 60% vs pi 42.5%
+
+`runs/C_full__big__dev40__20260902T182723Z`, commit 8f2e099 at launch (N=3, provider
+GMICloud→Baidu→StreamLake fp8; Baidu served nearly every request and cached 71–87%).
+
+| config | pass@1 | reward | steps | input/task | cache | output/task | $/task | token_cap |
+|---|---|---|---|---|---|---|---|---|
+| A_pi (stock) | 17/40 (42.5%) | 55.3 | 29.2 | 1,197k | 83% | 42k | $0.656 | 0 |
+| B_bash v0 | 7/40 (17.5%) | 26.5 | 28.0 | 592k | 22% | 27k | $0.545 | 6 |
+| C_full v0 | 9/40 (22.5%) | 37.6 | 42.7 | 858k | 33% | 27k | $0.664 | 9 |
+| **C_full v1** | **24/40 (60%)** | **74.9** | 31.9 | 1,037k | 85% | 88k | $0.661 | **0** |
+
+Paired against A on all 40: C wins 12 tasks A lost, loses 5 A won; the pre-registered
+stop rule (C ≤ A − 4 after 16 paired) was never close. Same cost per task as pi; C spends
+its tokens on reasoning (2× output) and recovers them through an 85% cache hit rate.
+Checkpoint criteria: cache 85%, 31 rehearsal FAILs cleared before finish, 0 API errors,
+0 token-cap hits, 1 NameError.
+
+The 16 failures, by cause (A's reward on the same task in brackets):
+
+| cause | tasks | status |
+|---|---|---|
+| stated invoicing policy applied only to delivered orders | 2014 [100], 2217 [22], 2244 [68], 2269 [100] | fixed on branch (merged): `erp.invoice(payment_term=)`, soft `so_invoiced`, playbook |
+| spend a hair above the reference, every rule green | 2070 90.7 [22], 2249 94.8 [24], 2259 99.0 [100] | `cheapest_buy` is now the only source of PO lines |
+| stated objective (keep capacity open) optimised as cost | 2086 40.0 [20] | `plan.set(objective=)` was in this run's code; still lost — see below |
+| alternate work-centre rate not stated anywhere in Odoo | 2221 [40], 2290 [23] | 1.5× margin on alternates |
+| task's 3600 s agent timeout mid-investigation | 2235 [20], 2280 [100] | wall-clock budget: execute at 70%, finish at 88% |
+| second PO on one supplier offer | 2279 [100] | `po_consolidated` + guard + `add_po_lines` |
+| origin quantity flow (hygiene) | 2167 96.5 [23] | `origin_flow` + quantity guards |
+| component PO timing, unexplained | 2204 [21], 2233 [4] | tiers/MOQ/max/origins all resolve; A fails the same rules |
+
+2086 with the objective in the plan: the model wrote the objective down and still
+manufactured 32 units. The objective line is a reminder, not a solver; a
+capacity-preservation objective needs the plan ranked by centre minutes first — a
+candidate for the next pass, not a fix I can verify offline.
+
+All of the fixes above are merged into main (2ac500a); none were in the run's code.
+
 ## Freeze
 
 *(P3.7)*

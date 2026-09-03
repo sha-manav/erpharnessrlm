@@ -24,14 +24,14 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P2.6 Prompts                | done   | 2026-09-01 | contract 425t, playbook 1168t, schema_card 694t, library_docs 1167t (generated) = 3454t < 9000; contract_min 175t < 400
 - P2.7 tools.py + loop.py     | done   | 2026-09-01 | tools.py schemas, llm.py (explicit cache breakpoints, provider pinning, retries), loop.py caps/paging/ledger/loop-detection; 17 unit tests
 - P2.8 agent.py (Harbor)      | done   | 2026-09-02 | C_full and B_bash dev5 smokes both complete cleanly (finish:5); 6 bugs found and fixed via smokes
-- P2.9 v0 smoke + dev point   | doing  | 2026-09-02 | passes 1–3 fixed timeline/force/origin/finish-exit defects; make7 gate 5/7 (A 3/7, v0 2/7), 81% cache, 0 API errors; misses are spend/objective → cheapest_buy + plan objective. dev40 C_full running under the paired stop rule
+- P2.9 v0 smoke + dev point   | done   | 2026-09-03 | dev40: C_full v1 24/40 (60%), reward 74.9, $0.661/task, 85% cache, 0 token-cap vs A_pi 17/40 (42.5%), 55.3, $0.656. 16 failures classified in NOTES; fixes for 14 of them merged after the run (invoicing policy, cheapest_buy path, alternate-centre margin, time budget, consolidation, origin flow)
 
 ## Phase 3 — Harness v1
 - P3.1 lib/db.py              | done   | 2026-09-02 | read-only SQL enforced by a Postgres ro_agent role, not by string matching; 5 live tests
 - P3.2 lib/state.py           | done   | 2026-09-02 | CREATE DATABASE TEMPLATE snapshots reachable over RPC, isolated from main; diff/list/drop; 4 live tests
 - P3.3 prompts/briefing.py    | done   | 2026-09-02 | lib/brief.py: per-section budgets, ~1.9k tokens, generic queries; injected into the first user message
 - P3.4 lib/delegate.py        | todo   |            |
-- P3.5 Remaining invariants   | part   | 2026-09-02 | 12 invariants: drafts, stock, supplier, invoicing, demand_covered, timeline, mo_feasible (start-order sim), no_fabricated_receipts, origin_consistent, mo_schedule, workcenter_capacity, so_has_commitment_date
+- P3.5 Remaining invariants   | done   | 2026-09-03 | 16 invariants incl. origin_consistent, origin_flow, mo_schedule, workcenter_capacity, po_consolidated, so_invoiced (soft); write-time guards mirror each
 - P3.6 Efficiency audit       | todo   |            |
 - P3.7 Freeze checklist       | todo   |            |
 

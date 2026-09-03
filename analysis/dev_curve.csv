@@ -1,0 +1,2 @@
+version,config,model,set,n,pass_at_1,mean_reward,mean_steps,mean_tokens_in,mean_tokens_cached,mean_tokens_out,mean_cost_usd,token_cap_hits,step_cap_hits,loop_hits,api_error_hits,crash_hits,run_id,commit
+v1,C_full,z-ai/glm-5.1,dev40,40,60.0,74.9,31.9,1037334,884941,87610,0.661,0,0,2,0,0,C_full__big__dev40__20260902T182723Z,8f2e099a
