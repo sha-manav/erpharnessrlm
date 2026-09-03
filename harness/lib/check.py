@@ -616,6 +616,142 @@ def _origin_consistent(client) -> tuple[bool, str]:
     return True, f"every purchase and manufacturing order names demand it reaches in time ({len(docs)})"
 
 
+def _max_flow(supplies: list[tuple[str, float, list[str]]], demand: dict[str, float]) -> dict[str, float]:
+    """Units of each supply that its named demands can absorb (Edmonds-Karp on a tiny
+    bipartite graph). Returns {supply_id: absorbed}."""
+    from collections import deque
+
+    src, sink = "__s__", "__t__"
+    cap: dict[str, dict[str, float]] = {}
+
+    def add(u, v, c):
+        cap.setdefault(u, {})[v] = cap.get(u, {}).get(v, 0.0) + c
+        cap.setdefault(v, {}).setdefault(u, 0.0)
+
+    for sid, qty, refs in supplies:
+        add(src, sid, qty)
+        for ref in refs:
+            add(sid, ref, qty)
+    for ref, qty in demand.items():
+        add(ref, sink, qty)
+    absorbed = {sid: 0.0 for sid, _, _ in supplies}
+    while True:
+        parent = {src: None}
+        queue = deque([src])
+        while queue and sink not in parent:
+            u = queue.popleft()
+            for v, c in cap.get(u, {}).items():
+                if c > 1e-9 and v not in parent:
+                    parent[v] = u
+                    queue.append(v)
+        if sink not in parent:
+            break
+        path, v = [], sink
+        while parent[v] is not None:
+            path.append((parent[v], v))
+            v = parent[v]
+        bottleneck = min(cap[u][v] for u, v in path)
+        for u, v in path:
+            cap[u][v] -= bottleneck
+            cap[v][u] += bottleneck
+        absorbed[path[-1][1]] += bottleneck
+    return absorbed
+
+
+def _origin_flow(client) -> tuple[bool, str]:
+    """Hard — every purchase or manufacturing order's quantity is absorbed by the demand its
+    origin names.
+
+    `origin_consistent` checks dates; this checks quantities. A component PO naming two
+    MOs that together need 40 units cannot be for 95 units — unless the vendor's minimum
+    forced it. A finished-goods MO for 26 units naming one 17-unit order is 9 units of
+    unexplained supply. Three dev40 trials lost hygiene points on this with every date
+    right. The rule is a flow: supplies push units into the orders they name, each
+    named order takes at least one unit, no order absorbs more than it needs.
+    """
+    # Demand: what each SO needs of each product, and what each open MO needs of each
+    # component (its raw moves).
+    so_need: dict[tuple[str, int], float] = {}
+    for line in client.search_read(
+            "sale.order.line", [("order_id.state", "in", ("sale", "done"))],
+            ["order_id", "product_id", "product_uom_qty"], limit=500):
+        if line["product_id"] and line["order_id"]:
+            key = (line["order_id"][1], line["product_id"][0])
+            so_need[key] = so_need.get(key, 0.0) + (line["product_uom_qty"] or 0)
+    mo_rows = client.search_read(
+        "mrp.production", [("state", "not in", ("cancel",))],
+        ["name", "product_id", "product_qty", "origin", "move_raw_ids"], limit=200)
+    mo_need: dict[tuple[str, int], float] = {}
+    raw_ids = [m for mo in mo_rows for m in (mo.get("move_raw_ids") or [])]
+    if raw_ids:
+        for mv in client.call("stock.move", "read", [raw_ids],
+                              {"fields": ["raw_material_production_id", "product_id", "product_uom_qty", "state"]}):
+            if mv.get("state") == "cancel" or not mv.get("product_id") or not mv.get("raw_material_production_id"):
+                continue
+            key = (mv["raw_material_production_id"][1], mv["product_id"][0])
+            mo_need[key] = mo_need.get(key, 0.0) + (mv["product_uom_qty"] or 0)
+
+    # Supplies: confirmed PO lines and open MOs, grouped by product.
+    supplies: dict[int, list[tuple[str, float, list[str], float | None]]] = {}
+    for line in client.search_read(
+            "purchase.order.line", [("order_id.state", "in", ("purchase", "done"))],
+            ["order_id", "partner_id", "product_id", "product_qty"], limit=500):
+        if not line["product_id"] or not line["order_id"]:
+            continue
+        po = client.search_read("purchase.order", [("id", "=", line["order_id"][0])], ["origin"], limit=1)
+        tokens = _origin_tokens((po[0].get("origin") or "") if po else "")
+        moq = None
+        if line.get("partner_id"):
+            offers = client._offers_for(line["partner_id"][0], line["product_id"][0], ["min_qty"])
+            tiers = [(o["min_qty"] or 0) for o in offers if (o["min_qty"] or 0) <= (line["product_qty"] or 0) + 0.01]
+            moq = max(tiers) if tiers else None          # the tier that applies to this quantity
+        supplies.setdefault(line["product_id"][0], []).append(
+            (line["order_id"][1], line["product_qty"] or 0, tokens, moq))
+    for mo in mo_rows:
+        if mo["product_id"]:
+            supplies.setdefault(mo["product_id"][0], []).append(
+                (mo["name"], mo["product_qty"] or 0, _origin_tokens(mo.get("origin") or ""), None))
+
+    problems = []
+    for product_id, rows in supplies.items():
+        rows = [r for r in rows if r[2]]          # origin_consistent reports empty origins
+        if not rows:
+            continue
+        demand: dict[str, float] = {}
+        for ref in {t for r in rows for t in r[2]}:
+            demand[ref] = so_need.get((ref, product_id), 0.0) + mo_need.get((ref, product_id), 0.0)
+        # Each supply must place at least one unit on every order it names; the rest
+        # flows. A quantity forced up to the vendor's minimum only has to place what the
+        # named orders need.
+        flow_rows = []
+        for name, qty, tokens, moq in rows:
+            capacity = sum(demand.get(t, 0.0) for t in tokens)
+            must_place = qty
+            if capacity + 1e-6 < qty and moq is not None and abs(qty - moq) <= 0.01:
+                must_place = capacity
+            flow_rows.append((name, must_place, tokens, qty, capacity))
+        absorbed = _max_flow([(n, m, t) for n, m, t, _, _ in flow_rows], demand)
+        for name, must_place, tokens, qty, capacity in flow_rows:
+            zero = [t for t in tokens if demand.get(t, 0.0) < 1 - 1e-6]
+            if zero:
+                problems.append(f"{name} names {', '.join(zero[:3])}, which need none of this product")
+                continue
+            if absorbed.get(name, 0.0) + 1e-6 < must_place:
+                problems.append(
+                    f"{name} supplies {qty:g} but the orders it names can absorb only "
+                    f"{absorbed.get(name, 0.0):g} more (they need {capacity:g} in total, shared "
+                    "with other supplies)")
+    if problems:
+        shown = "; ".join(problems[:4])
+        more = f" (+{len(problems) - 4} more)" if len(problems) > 4 else ""
+        return False, (
+            f"{len(problems)} order(s) whose quantity does not trace to the demand they name: {shown}{more}. "
+            "Buy or make what the named orders need (erp.earliest_build / erp.cheapest_buy give the "
+            "exact shortfall) and name every order the quantity is for; a purchase forced up to the "
+            "vendor's minimum is the one allowed excess.")
+    return True, f"every purchase and manufacturing quantity traces to the demand it names ({sum(len(r) for r in supplies.values())})"
+
+
 def _mo_schedule(client) -> tuple[bool, str]:
     """Appendix B.6, first half (hard) — an MO carries the dates and the work centre a plan needs.
 
@@ -798,6 +934,7 @@ INVARIANTS: list[Check] = [
     # plan.
     Check("origin_consistent", "each PO/MO origin names only demand it reaches in time", True,
           _origin_consistent),
+    Check("origin_flow", "each PO/MO quantity is absorbed by the demand it names", True, _origin_flow),
     Check("mo_schedule", "every MO has a start, a feasible due date and a work centre", True,
           _mo_schedule),
     Check("workcenter_capacity", "no work centre is booked past its stated limit", True,

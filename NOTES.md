@@ -1033,6 +1033,18 @@ headroom. Dev scenarios that state alternate rates put them at 1.18–1.40×.
   Now: `time_budget_s` (3300) — budget in the first message, elapsed time in every
   status line, "execute now" at 70%, "finish now" at 88%.
 
+### dev40 (running): origin quantities are a flow
+
+Three trials (2156 99.4 pass, 2180 99.0 pass, 2167 96.5 fail) lost hygiene points on
+`po_origin_traceability` with every date right. The grader runs a max-flow: each PO/MO
+pushes its quantity into the orders its origin names (an SO's line quantity, or an MO's
+raw need for that component), one unit minimum per name, excess allowed only when the
+quantity is exactly the vendor's applicable tier minimum. Now: `origin_flow` (hard) runs
+the same flow; `create_po` / `create_mo` refuse a quantity the named orders cannot absorb,
+naming what each needs; `erp.origin_capacity(product_id, tokens)` exposes the numbers.
+Also on the branch since the last note: `feasible_vendors` points at `cheapest_buy`
+(2259 lost 0.35% on a hand-picked split; 2070 90.7 on the same).
+
 ## Freeze
 
 *(P3.7)*

@@ -695,3 +695,62 @@ def test_a_supplier_offer_split_across_two_pos_is_detected(erp, offer):
     finally:
         erp.cancel("purchase.order", a)
         erp.cancel("purchase.order", b)
+
+
+def test_a_component_po_larger_than_the_mos_it_names_is_detected(erp, made):
+    """Origin quantities are a flow: a PO must be absorbed by the MOs it names."""
+    from lib import check
+
+    plan = erp.earliest_build(made, 2)
+    comp = offers = None
+    for c in plan["components"]:
+        offers = erp.suppliers([c["component_id"]]).all()
+        if offers:
+            comp = c
+            break
+    if comp is None:
+        pytest.skip("no purchasable component")
+    o = offers[0]
+    mo = erp.create_mo(made, 2, date_start="2026-11-20 08:00:00", force=True)
+    erp.confirm_mo(mo)
+    mo_name = erp.get("mrp.production", [mo], ["name"])[0]["name"]
+    need = comp["needed"]                       # already for the 2 units planned
+    big = max(o["min_qty"] or 0, need * 2 + 50)  # far beyond the MO's need and above MOQ
+    po = erp.create_po(o["vendor_id"], [(comp["component_id"], big)], date_planned="2026-11-15 08:00:00",
+                       origin=mo_name, force=True)
+    erp.confirm_po(po)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "origin_flow") == "FAIL", evidence_of(table, "origin_flow")
+        assert "absorb" in evidence_of(table, "origin_flow")
+    finally:
+        erp.cancel("purchase.order", po)
+        erp.cancel("mrp.production", mo)
+
+
+def test_a_component_po_matching_the_mo_need_passes(erp, made):
+    from lib import check
+
+    plan = erp.earliest_build(made, 2)
+    comp = offers = None
+    for c in plan["components"]:
+        offers = erp.suppliers([c["component_id"]]).all()
+        if offers:
+            comp = c
+            break
+    if comp is None:
+        pytest.skip("no purchasable component")
+    o = offers[0]
+    mo = erp.create_mo(made, 2, date_start="2026-11-20 08:00:00", force=True)
+    erp.confirm_mo(mo)
+    mo_name = erp.get("mrp.production", [mo], ["name"])[0]["name"]
+    qty = max(o["min_qty"] or 0, comp["needed"])   # exactly the need, or the MOQ
+    po = erp.create_po(o["vendor_id"], [(comp["component_id"], qty)], date_planned="2026-11-15 08:00:00",
+                       origin=mo_name, force=True)
+    erp.confirm_po(po)
+    try:
+        table = check.invariants(erp)
+        assert status_of(table, "origin_flow") == "pass", evidence_of(table, "origin_flow")
+    finally:
+        erp.cancel("purchase.order", po)
+        erp.cancel("mrp.production", mo)

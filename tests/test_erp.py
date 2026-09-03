@@ -651,3 +651,42 @@ def test_invoice_with_a_named_payment_term_sets_it_on_order_and_invoice(erp, cat
             erp.payment_term_id("no such term zz")
     finally:
         erp.cancel("sale.order", so)
+
+
+def test_create_po_refuses_a_quantity_the_named_orders_cannot_absorb(erp):
+    """Origin quantities are a flow: name only what consumes the supply, unit for unit."""
+    from lib.erp import OdooError
+
+    comp = offers = pid = None
+    for bom in erp.search_read("mrp.bom", [("bom_line_ids", "!=", False)], ["product_tmpl_id"], limit=20):
+        pid = erp.search_read("product.product", [("product_tmpl_id", "=", bom["product_tmpl_id"][0])],
+                              ["id"], limit=1)[0]["id"]
+        for c in erp.earliest_build(pid, 2)["components"]:
+            offers = erp.suppliers([c["component_id"]]).all()
+            if offers:
+                comp = c
+                break
+        if comp:
+            break
+    if comp is None:
+        pytest.skip("no BOM with a purchasable component")
+    o = offers[0]
+    mo = erp.create_mo(pid, 2, date_start="2026-11-20 08:00:00", force=True)
+    erp.confirm_mo(mo)
+    mo_name = erp.get("mrp.production", [mo], ["name"])[0]["name"]
+    try:
+        big = max(o["min_qty"] or 0, comp["needed"] + 50) + 1     # above need and not the MOQ
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], [(comp["component_id"], big)], date_planned="2026-11-15 08:00:00",
+                          origin=mo_name)
+        assert "absorb" in str(excinfo.value)
+        with pytest.raises(OdooError) as excinfo:
+            erp.create_po(o["vendor_id"], [(comp["component_id"], 1)], date_planned="2026-11-15 08:00:00",
+                          origin="S99999", force=False)
+        assert "origin" in str(excinfo.value)
+        ok = max(o["min_qty"] or 0, comp["needed"])
+        po = erp.create_po(o["vendor_id"], [(comp["component_id"], ok)], date_planned="2026-11-15 08:00:00",
+                           origin=mo_name)
+        erp.cancel("purchase.order", po)
+    finally:
+        erp.cancel("mrp.production", mo)
