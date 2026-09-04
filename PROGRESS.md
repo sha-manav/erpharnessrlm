@@ -33,13 +33,13 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P3.4 lib/delegate.py        | todo   |            |
 - P3.5 Remaining invariants   | done   | 2026-09-03 | 16 invariants incl. origin_consistent, origin_flow, mo_schedule, workcenter_capacity, po_consolidated, so_invoiced (soft); write-time guards mirror each
 - P3.6 Efficiency audit       | todo   |            |
-- P3.7 Freeze checklist       | todo   |            |
+- P3.7 Freeze checklist       | done   | 2026-09-04 | analysis/freeze.md; tag harness-v1-eval100 at 1f9d91f; mid-run patch and batch provenance recorded
 
 ## Phase 4 — Eval runs
 - P4 all configs on eval100   | part   | 2026-09-03 | A_pi 39/100 (54.7, $0.62); C_full v1 72/100 (88.9, $0.83, 86% cache, 5 token-cap, 2 timeouts); paired: C +37/−4. B_bash and C_minus_* ablations not run on eval (credit); their dev40 numbers are in NOTES
 
 ## Phase 5 — Analysis and write-up
-- P5.1 stats.py               | todo   |            |
-- P5.2 figures.py             | todo   |            |
-- P5.3 Failure taxonomy       | todo   |            |
-- P5.4 Write-up               | todo   |            |
+- P5.1 stats.py               | done   | 2026-09-04 | paired bootstrap + exact McNemar: eval100 +33 pts [+22, +43], p=1e-7; reward +34.2 [+25.6, +43.0]
+- P5.2 figures.py             | done   | 2026-09-04 | fig1_pareto, fig2_harness_groups, fig_tokens (B_bash eval30 point added when its run lands)
+- P5.3 Failure taxonomy       | done   | 2026-09-04 | analysis/failures_eval100.md: 12 optimality-only, 5 token-cap, 4 origin, 3 capacity, 2 timing, 2 timeouts
+- P5.4 Write-up               | done   | 2026-09-04 | analysis/writeup.md (B_bash eval30 slice pending)
