@@ -27,8 +27,8 @@ By difficulty: easy 17/18 vs 12/18, medium 45/57 vs 22/57, hard 10/25 vs 5/25.
 
 The lift is the harness, not the model: the model, sampling settings and provider are
 identical. It is also not the loop alone: on the 40-task development set, bash plus a
-finish tool scores 17.5%, below pi's 42.5%; the gain arrives with the domain library
-(figure 2). This is the shape of result Harvey reported for legal diligence with an
+finish tool scores 17.5% on dev40 and 33% on a 30-task eval slice where pi scores 50% and
+this harness 77%; the gain arrives with the domain library (figure 2, §5). This is the shape of result Harvey reported for legal diligence with an
 RLM-style harness: a REPL with domain primitives and a gated finish, no fine-tuning.
 
 ## 2. Setup
@@ -129,10 +129,20 @@ much (96k vs 37k output tokens) and reads more (1.2M vs 1.0M input), but an 86% 
 hit rate keeps the input side cheap. Steps are similar (33.5 vs 27.7).
 
 **Ablation** (figure 2). On dev40: A_pi 42.5%, B_bash 17.5%, C_full v0 22.5%, C_full v1
-60%. On a 30-task stratified slice of eval100 (`configs/eval30.txt`, chosen by
-position, no outcomes consulted): pi 15/30, C_full 23/30, B_bash — see
-`analysis/eval30_B_bash.json` (run in progress at the time of writing; the table is
-updated by `scripts/figures.py` when it lands).
+60%. On a 30-task stratified slice of eval100 (`configs/eval30.txt`, chosen by position
+in sorted order per difficulty, no outcomes consulted), all three paired on the same
+tasks:
+
+| eval30 slice | B_bash (loop + finish, no library) | pi | C_full v1 |
+|---|---|---|---|
+| pass@1 | 10/30 (33.3%) | 15/30 (50.0%) | 23/30 (76.7%) |
+| mean reward | 52.8 | 58.2 | 88.0 |
+| $/task | 0.84 | 0.66 | 0.83 |
+
+C_full vs B_bash: +43 points, 95% CI [+23, +63], discordant 14 vs 1, McNemar p = 1e-3.
+pi vs B_bash: +17 points, CI [−3, +37], p = 0.18. The loop with a finish tool and no
+domain library is no better than pi at the same cost; the library is what moves the
+number. (`analysis/eval30_B_bash.json`; `scripts/stats.py … --subset configs/eval30.txt`.)
 
 **Failures** (`analysis/failures_eval100.md`). Of the harness's 28 misses, 12 have every
 constraint and hygiene rule green and lose on the optimality term alone (nine score

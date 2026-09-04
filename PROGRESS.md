@@ -36,7 +36,7 @@ One line per task id: `status | date | note`. Statuses: `todo`, `doing`, `done`,
 - P3.7 Freeze checklist       | done   | 2026-09-04 | analysis/freeze.md; tag harness-v1-eval100 at 1f9d91f; mid-run patch and batch provenance recorded
 
 ## Phase 4 — Eval runs
-- P4 all configs on eval100   | part   | 2026-09-03 | A_pi 39/100 (54.7, $0.62); C_full v1 72/100 (88.9, $0.83, 86% cache, 5 token-cap, 2 timeouts); paired: C +37/−4. B_bash and C_minus_* ablations not run on eval (credit); their dev40 numbers are in NOTES
+- P4 all configs on eval100   | part   | 2026-09-04 | A_pi 39/100 (54.7, $0.62); C_full v1 72/100 (88.9, $0.83), paired +33 [+22,+43] p=1e-7; B_bash 10/30 on a stratified eval slice (pi 15, C 23 on the same 30). C_minus_* not run on eval
 
 ## Phase 5 — Analysis and write-up
 - P5.1 stats.py               | done   | 2026-09-04 | paired bootstrap + exact McNemar: eval100 +33 pts [+22, +43], p=1e-7; reward +34.2 [+25.6, +43.0]

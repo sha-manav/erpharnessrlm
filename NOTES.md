@@ -1180,6 +1180,15 @@ batches by a concurrency restart, two network drops and a credit floor; five tri
 were rerun after dying to the second network drop (one of them, 2297, had scored 99.9
 on the killed attempt and 20.4 on the rerun — the rerun stands).
 
+## Ablation on eval (2026-09-04): B_bash on a 30-task slice
+
+`runs/B_bash__big__eval30__20260904T074309Z` — `configs/eval30.txt` is a stratified slice
+(5 easy / 17 medium / 8 hard) picked by position, no outcomes consulted. Paired on the
+30: B_bash 10 passes (33.3%, reward 52.8, $0.84/task), pi 15 (50.0%, 58.2, $0.66), C_full
+v1 23 (76.7%, 88.0, $0.83). C vs B +43 pts [+23, +63], McNemar p = 1e-3; pi vs B +17
+[−3, +37], p = 0.18. The loop alone is not the gain; B_bash also spends as much as C
+(2.0× pi's output tokens) without the library to spend it on.
+
 ## Freeze
 
 *(P3.7)*
